@@ -1,110 +1,66 @@
-// window_qr.cpp
-#include <algorithm>
-#include <math.h>
-
 #include "window_qr.hpp"
-#include "gui.hpp"
-#include "display.h"
+
+#include "display.hpp"
 #include "qrcodegen.h"
 
-/// QR API
-/// TODO create separate class somewhere else
+void draw_qr(const DrawQROptions &options) {
+    /// Defines maximal size of QR code and buffers needed for generating. Keep it low.
+    static constexpr uint8_t qr_version_max = 9;
+    static constexpr int border = 2; /// border size in pixels; same for all sides
+    static constexpr int px_per_module = 2; /// width/height of module (single colored square)
+    static constexpr bool scale = true; /// changes px_per_module so the QR code is the biggest that fits in the rect
 
-/// private
-bool generate_qr_nobuff(const char *text, uint8_t qrcode[]) {
-    uint8_t buffer[qrcodegen_BUFFER_LEN_FOR_VERSION(qr_version_max)];
-    return generate_qr(text, qrcode, buffer);
-}
+    const Rect16::Width_t width = options.rect.Width();
+    const Rect16::Height_t height = options.rect.Height();
+    const Align_t align = options.align;
 
-/// public
-bool generate_qr(const char *text, uint8_t qrcode[]) {
-    return generate_qr_nobuff(text, qrcode);
-}
+    /// Drawn QR code, 353 B on stack
+    uint8_t qrcode[qrcodegen_BUFFER_LEN_FOR_VERSION(qr_version_max)];
 
-/// public
-bool generate_qr(const char *text, uint8_t qrcode[], uint8_t buffer[]) {
-    if (buffer == nullptr)
-        return generate_qr_nobuff(text, qrcode);
+    { // Create QR code
+        /// Temporary buffer, 353 B using display buffer
+        display::BorrowBuffer buffer;
+        assert(display::buffer_pixel_size() >= qrcodegen_BUFFER_LEN_FOR_VERSION(qr_version_max));
+        if (!qrcodegen_encodeText(options.data, buffer, qrcode, qrcodegen_Ecc_LOW, 1, qr_version_max, qrcodegen_Mask_AUTO, true)) {
+            return;
+        }
+    }
 
-    return qrcodegen_encodeText(text, buffer, qrcode, qrcodegen_Ecc_LOW, 1, qr_version_max, qrcodegen_Mask_AUTO, true);
-}
-
-int get_qr_size(uint8_t *qrcode) {
-    return qrcodegen_getSize(qrcode);
-}
-
-int get_qr_px_size(uint8_t qrcode[], const window_qr_t *const window) {
-    return window->px_per_module * (2 * window->border + qrcodegen_getSize(qrcode));
-}
-
-int get_qr_px_size(uint8_t qrcode[], const window_qr_t *const window, uint16_t px_per_module) {
-    return px_per_module * (2 * window->border + qrcodegen_getSize(qrcode));
-}
-
-/// Draw QR code to the screen.
-///
-void draw_qr(uint8_t qrcode[], const window_qr_t *const window) {
-
-    uint8_t ppm = window->px_per_module; /// pixels per module
-    const uint16_t border = window->border;
-    const uint16_t size = get_qr_size(qrcode);
+    uint8_t ppm = px_per_module; /// pixels per module
+    const uint16_t size = qrcodegen_getSize(qrcode);
 
     uint16_t x0 = 0;
     uint16_t y0 = 0;
 
     /// scale QR code
-    if (window->scale) {
-        const uint16_t size_w_bord = size + 2 * window->border;
-        ppm = std::max(1, (int)floor(std::min(uint16_t(window->rect.Height()), uint16_t(window->rect.Width())) / float(size_w_bord)));
+    if (scale) {
+        const uint16_t size_w_bord = size + 2 * border;
+        ppm = std::max(1, (int)floor(std::min(uint16_t(height), uint16_t(width)) / float(size_w_bord)));
     }
-    const uint16_t px_size = get_qr_px_size(qrcode, window, ppm);
+    const uint16_t px_size = ppm * (2 * border + qrcodegen_getSize(qrcode));
 
     /// alignment
-    if (window->align & ALIGN_HCENTER) {
-        x0 = std::max(0, (window->rect.Width() - px_size)) / 2;
-    } else if (window->align & ALIGN_RIGHT) {
-        x0 = std::max(0, (window->rect.Width() - px_size));
+    if (align.Horizontal() == Align_t::horizontal::center) {
+        x0 = std::max(0, (width - px_size)) / 2;
+    } else if (align.Horizontal() == Align_t::horizontal::right) {
+        x0 = std::max(0, (width - px_size));
     }
 
-    if (window->align & ALIGN_VCENTER) {
-        y0 = std::max(0, (window->rect.Height() - px_size)) / 2;
-    } else if (window->align & ALIGN_BOTTOM) {
-        y0 = std::max(0, (window->rect.Height() - px_size));
+    if (align.Vertical() == Align_t::vertical::center) {
+        y0 = std::max(0, (height - px_size)) / 2;
+    } else if (align.Vertical() == Align_t::vertical::bottom) {
+        y0 = std::max(0, (height - px_size));
     }
 
     /// move to window location
-    x0 += window->rect.Left() + window->border * ppm;
-    y0 += window->rect.Top() + window->border * ppm;
+    x0 += options.rect.Left() + border * ppm;
+    y0 += options.rect.Top() + border * ppm;
 
     /// FIXME paint border at once (fill_between_rect) - it's faster
     /// paint QR code
-    for (int y = -border; y < (size + border); ++y)
-        for (int x = -border; x < (size + border); ++x)
-            display::FillRect(Rect16(x0 + x * ppm, y0 + y * ppm, ppm, ppm), ((qrcodegen_getModule(qrcode, x, y) ? window->px_color : window->bg_color)));
+    for (int y = -border; y < (size + border); ++y) {
+        for (int x = -border; x < (size + border); ++x) {
+            display::fill_rect(Rect16(x0 + x * ppm, y0 + y * ppm, ppm, ppm), ((qrcodegen_getModule(qrcode, x, y) ? COLOR_BLACK : COLOR_WHITE)));
+        }
+    }
 }
-
-/// QR Window
-
-window_qr_t::window_qr_t(window_t *parent, Rect16 rect)
-    : window_t(parent, rect)
-// , version(9)
-// , ecc_level(qrcodegen_Ecc_HIGH)
-// , mode(qrcodegen_Mode_ALPHANUMERIC)
-// , border(4)
-// , px_per_module(3)
-// , bg_color(COLOR_WHITE)
-//    , px_color(COLOR_BLACK)
-{
-}
-
-/// window definition
-// const window_class_qr_t window_class_qr = {
-//     {
-//         WINDOW_CLS_QR,
-//         sizeof(window_qr_t),
-//         (window_init_t *)window_qr_init,
-//         0,
-//         (window_draw_t *)window_qr_draw,
-//         0,
-//     },
-// };

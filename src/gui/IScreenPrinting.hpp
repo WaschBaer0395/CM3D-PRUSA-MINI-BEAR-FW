@@ -1,15 +1,14 @@
-//IScreenPrinting.hpp
+// IScreenPrinting.hpp
 #pragma once
 #include "gui.hpp"
 #include "screen.hpp"
 #include "window_header.hpp"
-#include "status_footer.h"
-#include "resource.h"
+#include "status_footer.hpp"
 
-class IScreenPrinting : public AddSuperWindow<screen_t> {
+class IScreenPrinting : public screen_t {
 protected:
     window_header_t header;
-    status_footer_t footer;
+    StatusFooter footer;
 
     static IScreenPrinting *ths;
     static void StopAction();
@@ -20,11 +19,10 @@ protected:
     virtual void tuneAction() = 0;
 
 public:
-    IScreenPrinting(string_view_utf8 caption);
+    IScreenPrinting(const string_view_utf8 &caption);
     ~IScreenPrinting();
     static IScreenPrinting *GetInstance();
     static void NotifyMarlinStart();
-    virtual Rect16 GetPopUpRect() { return Rect16(); }
 
 private:
     virtual void notifyMarlinStart() {};

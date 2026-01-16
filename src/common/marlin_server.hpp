@@ -1,150 +1,280 @@
 // marlin_server.hpp
 #pragma once
 
-#include "marlin_server.h"
-#include "client_response.hpp"
+#include <optional>
+#include <atomic>
+#include "marlin_vars.hpp"
 
-/*****************************************************************************/
-//C++ only features
+#include "encoded_fsm_response.hpp"
+#include <warning_type.hpp>
+#include "../../lib/Marlin/Marlin/src/inc/MarlinConfig.h"
+#include "marlin_events.h"
+#include "client_fsm_types.h"
+#include "marlin_server_extended_fsm_data.hpp"
+#include <stddef.h>
+#include <gcode/inject_queue_actions.hpp>
+#include <marlin_server_shared.h>
+#include <utils/callback_hook.hpp>
+#include <marlin_server_request.hpp>
 
-//todo ensure signature match
-//notify all clients to create finit statemachine, must match fsm_create_t signature
-void fsm_create(ClientFSM type, uint8_t data = 0);
-//notify all clients to destroy finit statemachine, must match fsm_destroy_t signature
-void fsm_destroy(ClientFSM type);
-//notify all clients to change state of finit statemachine, must match fsm_change_t signature
-//can be called inside while, notification is send only when is different from previous one
-void _fsm_change(ClientFSM type, uint8_t phase, uint8_t progress_tot, uint8_t progress);
+#include <serial_printing.hpp>
 
-template <class T>
-void fsm_change(ClientFSM type, T phase, uint8_t progress_tot, uint8_t progress) {
-    _fsm_change(type, GetPhaseIndex(phase), progress_tot, progress);
+#if BOARD_IS_DWARF()
+    #error "You're trying to add marlin_server to Dwarf. Don't!"
+#endif /*BOARD_IS_DWARF()*/
+
+/// Determines how full should the gcode queue be kept when fetching from media
+/// You need at least one free slot for commands from serial (and UI)
+#define MEDIA_FETCH_GCODE_QUEUE_FILL_TARGET (BUFSIZE - 1)
+
+class GCodeReaderStreamRestoreInfo;
+struct GCodeReaderPosition;
+
+namespace marlin_server {
+
+// server flags
+// FIXME define the same type for these and marlin_server.flags
+constexpr uint16_t MARLIN_SFLG_EXCMODE = 0x0010; // exclusive mode enabled (currently used for selftest/wizard)
+constexpr uint16_t MARLIN_SFLG_STOPPED = 0x0020; // moves stopped until command drain
+
+// server variable update interval [ms]
+constexpr uint8_t MARLIN_UPDATE_PERIOD = 100;
+
+//-----------------------------------------------------------------------------
+// server side functions (can be called from server thread only)
+
+// initialize server side - must be called at beginning in server thread
+void init();
+
+// server loop - must be called periodically in server thread
+void loop();
+
+// direct call of babystep.add_steps(Z_AXIS, ...)
+void do_babystep_Z(float offs);
+
+void move_axis(float pos, float feedrate, size_t axis);
+
+// direct call of 'enqueue_and_echo_command'
+// @retval true command enqueued
+// @retval false otherwise
+void enqueue_gcode(const char *gcode);
+
+[[nodiscard]] bool enqueue_gcode_try(const char *gcode);
+
+// direct call of 'enqueue_and_echo_command' with formatting
+// @retval true command enqueued
+// @retval false otherwise
+void __attribute__((format(__printf__, 1, 2)))
+enqueue_gcode_printf(const char *gcode, ...);
+
+// direct call of 'inject_action'
+// @retval true command enqueued in inject queue
+// @retval false otherwise
+bool inject(InjectQueueRecord record);
+
+// direct call of settings.save()
+void settings_save();
+
+// direct call of settings.reset()
+void settings_reset();
+
+// Start serial print (issue when gcodes start comming via serial line)
+void serial_print_start();
+
+/**
+ * @brief Direct print file with SFN format.
+ * @param filename file to print
+ * @param resume_pos position in the file to start from
+ * @param skip_preview can be used to skip preview thumbnail or toolmapping screen
+ */
+void print_start(const char *filename, const GCodeReaderPosition &resume_pos, marlin_server::PreviewSkipIfAble skip_preview = marlin_server::PreviewSkipIfAble::no);
+
+/// Finalize serial print (exit print state and clean up)
+/// this is meant to be gracefull print finish, called when print finishes sucessfully.
+void serial_print_finalize();
+
+//
+void set_command(uint32_t command);
+
+//
+void print_abort();
+
+//
+void print_resume();
+
+// Quick stop to avoid harm to the user
+void quick_stop();
+
+// Resume operation after quick_stop
+void quick_resume();
+
+// return true if the printer is not moving (idle, paused, aborted or finished)
+bool printer_idle();
+
+// returns true if printer is printing, else false;
+bool is_printing();
+
+/// \returns whether the server is currently processing or has queued any gcodes, motion and such
+bool is_processing();
+
+/**
+ * @brief Know if any print preview state is active.
+ * @return true if print preview is on
+ */
+bool print_preview();
+
+struct resume_state_t {
+    xyze_pos_t pos = {}; // resume position for unpark_head
+    std::array<int16_t, HOTENDS> nozzle_temp; // target nozzle temperatures
+    uint8_t fan_speed = 0; // resume fan speed
+    uint16_t print_speed = 0; // resume printing speed
+};
+
+//
+void print_pause();
+
+// return true if the printer is currently aborting or already aborted the print
+bool aborting_or_aborted();
+
+// return true if the printer is currently finishing or already finished the print
+bool finishing_or_finished();
+
+// return true if the printer is in the paused and not moving state
+bool printer_paused();
+
+// Printer is paused, preparing for a pause or resuming from a pause.
+bool printer_paused_extended();
+
+// return the resume state during a paused print
+resume_state_t *get_resume_data();
+
+// set the resume state for unpausing a print
+void set_resume_data(const resume_state_t *data);
+
+/// Plans retract and returns E stepper position in mm
+void retract();
+
+/// Lifts printing head
+void lift_head();
+
+/// Parks head at print pause or crash
+/// If Z lift or retraction wasn't performed
+/// you can rerun them.
+void park_head();
+
+//
+void unpark_head_XY();
+void unpark_head_ZE();
+
+//
+bool all_axes_homed();
+
+//
+bool all_axes_known();
+
+// returns state of exclusive mode (1/0)
+int get_exclusive_mode();
+
+// set state of exclusive mode (1/0)
+void set_exclusive_mode(int exclusive);
+
+// display different value than target, used in preheat
+void set_temp_to_display(float value, uint8_t extruder);
+
+// called to set target bed (sets both marlin_vars and thermal_manager)
+void set_target_bed(float value);
+
+bool get_media_inserted();
+
+//
+void resuming_begin();
+
+// Thread-safe way to send request that don't require parameters
+void send_request_flag(const RequestFlag request);
+
+const GCodeReaderStreamRestoreInfo &stream_restore_info();
+
+/// Returns media position of the currently executed gcode
+uint32_t media_position();
+void set_media_position(uint32_t set);
+
+void print_quick_stop_powerpanic();
+
+int32_t get_knob_position();
+
+// user can stop waiting for heating/cooling by pressing a button
+bool can_stop_wait_for_heatup();
+void can_stop_wait_for_heatup(bool val);
+
+/// If the phase matches currently recorded response, return it and consume it.
+/// Otherwise, return std::monostate and do not consume it.
+FSMResponseVariant get_response_variant_from_phase(FSMAndPhase fsm_and_phase, bool consume_response = true);
+
+/// Sets a FSM response to be processed
+void set_response(const EncodedFSMResponse &response);
+
+/// Clears any pending response for the provided FSM
+void clear_fsm_response(ClientFSM fsm);
+
+/// If the phase matches currently recorded response, return it and consume it.
+/// Otherwise, return Response::_none and do not consume it.
+inline Response get_response_from_phase(FSMAndPhase fsm_and_phase, bool consume_response = true) {
+    return get_response_variant_from_phase(fsm_and_phase, consume_response).value_or<Response>(Response::_none);
 }
 
-//inherited class for server side to be able to work with server_side_encoded_response
-class ClientResponseHandler : public ClientResponses {
-    ClientResponseHandler() = delete;
-    ClientResponseHandler(ClientResponseHandler &) = delete;
-    static uint32_t server_side_encoded_response;
+/// idles() for FSM response for the given phase and then \returns it
+Response wait_for_response(FSMAndPhase fsm_and_phase, uint32_t timeout_ms = 0);
 
-public:
-    //call inside marlin server on received response from client
-    static void SetResponse(uint32_t encoded_bt) {
-        server_side_encoded_response = encoded_bt;
-    }
-    //return response and erase it
-    //return -1 if button does not match
-    template <class T>
-    static Response GetResponseFromPhase(T phase) {
-        uint32_t _phase = server_side_encoded_response >> RESPONSE_BITS;
-        if ((static_cast<uint32_t>(phase)) != _phase)
-            return Response::_none;
-        uint32_t index = server_side_encoded_response & uint32_t(MAX_RESPONSES - 1); //get response index
-        server_side_encoded_response = -1;                                           //erase response
-        return GetResponse(phase, index);
-    }
-};
+/// Replacement for the FSM_Notifier. Hooked callbacks will get called in marlin idle()
+extern CallbackHookPoint<> idle_hook_point;
 
-//FSM_notifier
-class FSM_notifier {
-    struct data { //used floats - no need to retype
-        ClientFSM type;
-        uint8_t phase;
-        float scale = 1;  //scale from value to progress
-        float offset = 0; //offset from lowest value
-        uint8_t progress_min = 0;
-        uint8_t progress_max = 100;
-        uint8_t var_id;
-        uint8_t last_progress_sent;
-        data()
-            : type(ClientFSM::_none)
-            , phase(0)
-            , var_id(0)
-            , last_progress_sent(-1) {}
-    };
-    //static members
-    //there can be only one active instance of FSM_notifier, which use this data
-    static data s_data;
-    static FSM_notifier *activeInstance;
+void fsm_create(FSMAndPhase fsm_and_phase, fsm::PhaseData data = {});
 
-    //temporary members
-    //constructor stores previous state of FSM_notifier (its static data), destructor restores it
-    data temp_data;
+void fsm_change(FSMAndPhase fsm_and_phase, fsm::PhaseData data = {});
 
-protected:
-    //protected ctor so this instance cannot be created
-    FSM_notifier(ClientFSM type, uint8_t phase, variant8_t min, variant8_t max, uint8_t progress_min, uint8_t progress_max, uint8_t var_id);
-    FSM_notifier(const FSM_notifier &) = delete;
-    virtual void preSendNotification() {}
-    virtual void postSendNotification() {}
+void fsm_destroy(ClientFSM type);
 
-public:
-    ~FSM_notifier();
-    static void SendNotification();
-};
+template <FSMExtendedDataSubclass DATA_TYPE>
+void fsm_change_extended(FSMAndPhase fsm_and_phase, DATA_TYPE data) {
+    FSMExtendedDataManager::store(data);
+    // TODO Investigate if this hack is still needed since we have fsm::States::generation
+    //  We use this ugly hack that we increment fsm_change_data[0] every time data changed, to force redraw of GUI
+    static std::array<uint8_t, 4> fsm_change_data = { 0 };
+    fsm_change_data[0]++;
+    fsm_change(fsm_and_phase, fsm_change_data);
+}
 
-//template used by using statement
-template <int VAR_ID, class T>
-class Notifier : public FSM_notifier {
-public:
-    Notifier(ClientFSM type, uint8_t phase, T min, T max, uint8_t progress_min, uint8_t progress_max) {};
-    //        : FSM_notifier(type, phase, min, max, progress_min, progress_max, VAR_ID) {}
-};
-
-template <int VAR_ID>
-class Notifier<VAR_ID, float> : public FSM_notifier {
-public:
-    Notifier(ClientFSM type, uint8_t phase, float min, float max, uint8_t progress_min, uint8_t progress_max)
-        : FSM_notifier(type, phase, variant8_flt(min), variant8_flt(max), progress_min, progress_max, VAR_ID) {};
-};
-
-//use an alias to automatically notify progress
-//just create an instance and progress will be notyfied while it exists
-using Notifier_MOTION = Notifier<MARLIN_VAR_MOTION, uint8_t>;
-using Notifier_GQUEUE = Notifier<MARLIN_VAR_GQUEUE, uint8_t>;
-using Notifier_PQUEUE = Notifier<MARLIN_VAR_PQUEUE, uint8_t>;
-using Notifier_IPOS_X = Notifier<MARLIN_VAR_IPOS_X, uint32_t>;
-using Notifier_IPOS_Y = Notifier<MARLIN_VAR_IPOS_Y, uint32_t>;
-using Notifier_IPOS_Z = Notifier<MARLIN_VAR_IPOS_Z, uint32_t>;
-using Notifier_IPOS_E = Notifier<MARLIN_VAR_IPOS_E, uint32_t>;
-using Notifier_POS_X = Notifier<MARLIN_VAR_POS_X, float>;
-using Notifier_POS_Y = Notifier<MARLIN_VAR_POS_Y, float>;
-using Notifier_POS_Z = Notifier<MARLIN_VAR_POS_Z, float>;
-using Notifier_POS_E = Notifier<MARLIN_VAR_POS_E, float>;
-using Notifier_TEMP_NOZ = Notifier<MARLIN_VAR_TEMP_NOZ, float>;
-using Notifier_TEMP_BED = Notifier<MARLIN_VAR_TEMP_BED, float>;
-using Notifier_TTEM_NOZ = Notifier<MARLIN_VAR_TTEM_NOZ, float>;
-using Notifier_TTEM_BED = Notifier<MARLIN_VAR_TTEM_BED, float>;
-using Notifier_Z_OFFSET = Notifier<MARLIN_VAR_Z_OFFSET, float>;
-using Notifier_FANSPEED = Notifier<MARLIN_VAR_FANSPEED, uint8_t>;
-using Notifier_PRNSPEED = Notifier<MARLIN_VAR_PRNSPEED, uint16_t>;
-using Notifier_FLOWFACT = Notifier<MARLIN_VAR_FLOWFACT, uint16_t>;
-using Notifier_WAITHEAT = Notifier<MARLIN_VAR_WAITHEAT, uint8_t>;
-using Notifier_WAITUSER = Notifier<MARLIN_VAR_WAITUSER, uint8_t>;
-using Notifier_SD_PRINT = Notifier<MARLIN_VAR_SD_PRINT, uint8_t>;
-using Notifier_SD_PDONE = Notifier<MARLIN_VAR_SD_PDONE, uint8_t>;
-using Notifier_DURATION = Notifier<MARLIN_VAR_DURATION, uint32_t>;
-
-//create finite state machine and automatically destroy it at the end of scope
 class FSM_Holder {
-    ClientFSM dialog;
+    ClientFSM type;
 
 public:
-    FSM_Holder(ClientFSM type, uint8_t data) //any data to send to dialog, could have different meaning for different dialogs
-        : dialog(type) {
-        fsm_create(type, data);
-    }
-
-    template <class T>
-    void Change(T phase, uint8_t progress_tot, uint8_t progress) const {
-        fsm_change(dialog, phase, progress_tot, progress);
+    FSM_Holder(FSMAndPhase fsm_and_phase, fsm::PhaseData data = fsm::PhaseData())
+        : type { fsm_and_phase.fsm } {
+        fsm_create(fsm_and_phase, data);
     }
 
     ~FSM_Holder() {
-        fsm_destroy(dialog);
+        fsm_destroy(type);
     }
 };
 
-uint8_t get_var_sd_percent_done();
-void set_var_sd_percent_done(uint8_t value);
 void set_warning(WarningType type);
+void clear_warning(WarningType type);
+bool is_warning_active(WarningType type);
+
+/// Displays a warning and blockingly waits for the response
+Response prompt_warning(WarningType type, uint32_t timeout_ms = 0);
+
+#if ENABLED(AXIS_MEASURE)
+// Sets length of X and Y axes for crash recovery
+void set_axes_length(xy_float_t xy);
+#endif
+
+void powerpanic_resume(const char *media_SFN_path, const GCodeReaderPosition &resume_pos, bool auto_recover);
+void powerpanic_finish_recovery();
+void powerpanic_finish_pause();
+void powerpanic_finish_toolcrash();
+
+void request_calibrations_screen();
+
+} // namespace marlin_server

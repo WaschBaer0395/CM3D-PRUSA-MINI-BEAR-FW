@@ -1,91 +1,293 @@
-//screen_splash.cpp
 #include "screen_splash.hpp"
 #include "ScreenHandler.hpp"
-#include "screen_menus.hpp"
 
 #include "config.h"
-#include "version.h"
-#include "eeprom.h"
+#include "config_features.h"
+#include <version/version.hpp>
+#include "img_resources.hpp"
+#include "marlin_client.hpp"
+#include <config_store/store_instance.hpp>
 
-#include "stm32f4xx_hal.h"
 #include "i18n.h"
 #include "../lang/translator.hpp"
 #include "language_eeprom.hpp"
-#include "screen_wizard.hpp"
+#include "screen_menu_languages.hpp"
+#include <pseudo_screen_callback.hpp>
 #include "bsod.h"
+#include <guiconfig/guiconfig.h>
+#include <feature/factory_reset/factory_reset.hpp>
+#include <window_msgbox_happy_printing.hpp>
 
-#ifdef _EXTUI
-    #include "marlin_client.h"
+#include <option/bootloader.h>
+#include <option/developer_mode.h>
+#include <option/has_translations.h>
+#include <gui/screen_printer_setup.hpp>
+
+#include <option/has_selftest.h>
+#if HAS_SELFTEST()
+    #include "printer_selftest.hpp"
+    #include "screen_menu_selftest_snake.hpp"
+#endif // HAS_SELFTEST
+
+#include <option/has_touch.h>
+#if HAS_TOUCH()
+    #include <hw/touchscreen/touchscreen.hpp>
+#endif // HAS_TOUCH
+
+#if ENABLED(POWER_PANIC)
+    #include "power_panic.hpp"
+#endif
+
+#include <option/has_toolchanger.h>
+#if HAS_TOOLCHANGER()
+    #include <module/prusa/toolchanger.h>
+#endif
+
+#include "display.hpp"
+#include <option/has_switched_fan_test.h>
+
+#if HAS_MINI_DISPLAY()
+    #define SPLASHSCREEN_PROGRESSBAR_X 16
+    #define SPLASHSCREEN_PROGRESSBAR_Y 148
+    #define SPLASHSCREEN_PROGRESSBAR_W 206
+    #define SPLASHSCREEN_PROGRESSBAR_H 12
+    #define SPLASHSCREEN_VERSION_Y     165
+
+#elif HAS_LARGE_DISPLAY()
+    #define SPLASHSCREEN_PROGRESSBAR_X 100
+    #define SPLASHSCREEN_PROGRESSBAR_Y 165
+    #define SPLASHSCREEN_PROGRESSBAR_W 280
+    #define SPLASHSCREEN_PROGRESSBAR_H 12
+    #define SPLASHSCREEN_VERSION_Y     185
 #endif
 
 screen_splash_data_t::screen_splash_data_t()
-    : AddSuperWindow<screen_t>()
-    , logo_prusa_mini(this, Rect16(0, 84, 240, 62), IDR_PNG_prusa_printer_splash)
-    , text_progress(this, Rect16(10, 171, 220, 20), is_multiline::no)
-    , progress(this, Rect16(10, 200, 220, 15), 15, COLOR_ORANGE, COLOR_GRAY)
-    , text_version(this, Rect16(0, 295, 240, 22), is_multiline::no)
-    , icon_logo_buddy(this, Rect16(), 0)  //unused?
-    , icon_logo_marlin(this, Rect16(), 0) //unused?
-    , icon_debug(this, Rect16(80, 215, 80, 80), IDR_PNG_marlin_logo) {
-    super::ClrMenuTimeoutClose();
+    : screen_t()
+    , text_progress(this, Rect16(0, SPLASHSCREEN_VERSION_Y, GuiDefaults::ScreenWidth, 18), is_multiline::no)
+    , progress(this, Rect16(SPLASHSCREEN_PROGRESSBAR_X, SPLASHSCREEN_PROGRESSBAR_Y, SPLASHSCREEN_PROGRESSBAR_W, SPLASHSCREEN_PROGRESSBAR_H), COLOR_ORANGE, COLOR_GRAY, 6)
+    , version_displayed(false) {
+    ClrMenuTimeoutClose();
 
-    if (ScreenWizard::IsConfigInvalid()) {
-        static const char en_text[] = "Wizard states invalid"; // intentionally not translated
-        bsod(en_text);
+    text_progress.set_font(Font::small);
+    text_progress.SetAlignment(Align_t::Center());
+    text_progress.SetTextColor(COLOR_GRAY);
+
+    snprintf(text_progress_buffer, sizeof(text_progress_buffer), "Firmware %s", version::project_version_full);
+    text_progress.SetText(string_view_utf8::MakeRAM(text_progress_buffer));
+    progress.SetProgressPercent(0);
+
+#if ENABLED(POWER_PANIC)
+    // don't present any screen or wizard if there is a powerpanic pending
+    if (power_panic::state_stored()) {
+        return;
+    }
+#endif
+
+#if DEVELOPER_MODE()
+    // don't present any screen or wizard
+    return;
+#endif
+
+    Screens::Access()->PushBeforeCurrent(ScreenFactory::Screen<PseudoScreenCallback, MsgBoxHappyPrinting>);
+
+#if HAS_SELFTEST() && !PRINTER_IS_PRUSA_iX()
+    const bool run_wizard =
+        []() {
+            SelftestResult sr = config_store().selftest_result.get();
+
+            auto any_passed = [](std::same_as<TestResult> auto... results) -> bool {
+                static_assert(sizeof...(results) > 0, "Pass at least one result");
+
+                return ((results == TestResult_Passed) || ...);
+            };
+
+            if (any_passed(sr.xaxis, sr.yaxis, sr.zaxis, sr.bed
+    #if PRINTER_IS_PRUSA_XL()
+                    ,
+                    config_store().selftest_result_phase_stepping.get()
+
+    #endif
+                        )) {
+                return false;
+            }
+            for (size_t e = 0; e < config_store_ns::max_tool_count; e++) {
+    #if HAS_TOOLCHANGER()
+                if (!prusa_toolchanger.is_tool_enabled(e)) {
+                    continue;
+                }
+    #endif
+                if (any_passed(sr.tools[e].printFan, sr.tools[e].heatBreakFan,
+    #if HAS_SWITCHED_FAN_TEST()
+                        sr.tools[e].fansSwitched,
+    #endif /* HAS_SWITCHED_FAN_TEST() */
+                        sr.tools[e].nozzle, sr.tools[e].fsensor, sr.tools[e].loadcell, sr.tools[e].dockoffset, sr.tools[e].tooloffset)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }();
+#elif HAS_SELFTEST()
+    const bool run_wizard = false;
+#endif
+
+    constexpr auto pepa_callback = +[] {
+        const char *txt =
+#if PRINTER_IS_PRUSA_XL()
+            N_("Hi, this is your\nOriginal Prusa XL printer.\n"
+               "I would like to guide you\nthrough the setup process.");
+#elif PRINTER_IS_PRUSA_MK4()
+            // The MK4 is left out intentionally - it could be MK4, MK4S or MK3.9, we don't know yet
+            N_("Hi, this is your\nOriginal Prusa printer.\n"
+               "I would like to guide you\nthrough the setup process.");
+#elif PRINTER_IS_PRUSA_MK3_5()
+            N_("Hi, this is your\nOriginal Prusa MK3.5 printer.\n"
+               "I would like to guide you\nthrough the setup process.");
+#elif PRINTER_IS_PRUSA_MINI()
+            N_("Hi, this is your\nOriginal Prusa MINI printer.\n"
+               "I would like to guide you\nthrough the setup process.");
+#elif PRINTER_IS_PRUSA_iX()
+            N_("Hi, this is your\nOriginal Prusa iX printer.\n"
+               "I would like to guide you\nthrough the setup process.");
+#elif PRINTER_IS_PRUSA_COREONE()
+            N_("Hi, this is your\nPrusa CORE One printer.\n"
+               "I would like to guide you\nthrough the setup process.");
+#else
+    #error unknown config
+#endif
+        MsgBoxPepaCentered(_(txt), Responses_Ok);
+    };
+
+#if HAS_TOUCH()
+    constexpr auto touch_error_callback = +[] {
+        touchscreen.set_enabled(false);
+        MsgBoxWarning(_("Touch driver failed to initialize, touch functionality disabled"), Responses_Ok);
+    };
+#endif
+
+    constexpr auto network_callback = +[] {
+        // Calls network_initial_setup_wizard
+        marlin_client::gcode("M1703 A");
+    };
+#if HAS_SELFTEST()
+    if (run_wizard) {
+        Screens::Access()->PushBeforeCurrent(ScreenFactory::Screen<ScreenMenuSTSWizard>);
+    }
+#endif
+    bool network_setup_needed = !config_store().printer_network_setup_done.get();
+    bool hw_config_needed = !config_store().printer_hw_config_done.get();
+    if (network_setup_needed) {
+        Screens::Access()->PushBeforeCurrent(ScreenFactory::Screen<PseudoScreenCallback, network_callback>);
+    }
+    if (hw_config_needed) {
+        Screens::Access()->PushBeforeCurrent(ScreenFactory::Screen<ScreenPrinterSetup>);
+    }
+    if (network_setup_needed || hw_config_needed
+#if HAS_SELFTEST()
+        || run_wizard
+#endif
+    ) {
+        Screens::Access()->PushBeforeCurrent(ScreenFactory::Screen<PseudoScreenCallback, pepa_callback>);
     }
 
-    text_progress.font = resource_font(IDR_FNT_NORMAL);
-    text_progress.SetAlignment(ALIGN_CENTER_BOTTOM);
-    static const char loading[] = N_("Loading ...");
-    text_progress.SetText(_(loading));
-    progress.SetFont(resource_font(IDR_FNT_BIG));
-    text_version.SetAlignment(ALIGN_CENTER);
-    snprintf(text_version_buffer, sizeof(text_version_buffer), "%s%s",
-        project_version, project_version_suffix_short);
-    // this MakeRAM is safe - text_version_buffer is globally allocated
-    text_version.SetText(string_view_utf8::MakeRAM((const uint8_t *)text_version_buffer));
+    // Check for FW type change
+    {
+        auto &model_var = config_store().last_boot_base_printer_model;
+        const auto model = model_var.get();
+        const auto current_base_model = PrinterModelInfo::firmware_base().model;
+        if (model == model_var.default_val) {
+            // Not initialized - assume correct printer
+            model_var.set(current_base_model);
+
+        } else if (model != current_base_model) {
+            constexpr auto callback = +[] {
+                StringViewUtf8Parameters<16> params;
+                MsgBoxError(
+                    _("Printer type changed from %s to %s.\nFactory reset will be performed.\nSome configuration (network, filament profiles, ...) will be preserved.")
+                        .formatted(params, PrinterModelInfo::get(config_store().last_boot_base_printer_model.get()).id_str, PrinterModelInfo::firmware_base().id_str),
+                    { Response::Continue });
+
+                FactoryReset::perform(false, FactoryReset::item_bitset({ FactoryReset::Item::network, FactoryReset::Item::stats, FactoryReset::Item::user_interface, FactoryReset::Item::user_profiles }));
+            };
+            Screens::Access()->PushBeforeCurrent(ScreenFactory::Screen<PseudoScreenCallback, callback>);
+        }
+    }
+
+#if HAS_TOUCH()
+    if (touchscreen.is_enabled() && !touchscreen.is_hw_ok()) {
+        Screens::Access()->PushBeforeCurrent(ScreenFactory::Screen<PseudoScreenCallback, touch_error_callback>);
+    }
+#endif // HAS_TOUCH
+#if HAS_TRANSLATIONS()
+    if (!LangEEPROM::getInstance().IsValid()) {
+        Screens::Access()->PushBeforeCurrent(ScreenFactory::Screen<ScreenMenuLanguages, ScreenMenuLanguages::Context::initial_language_selection>);
+    }
+#endif
+}
+
+screen_splash_data_t::~screen_splash_data_t() {
+    display::enable_resource_file(); // now it is safe to use resources from xFlash
 }
 
 void screen_splash_data_t::draw() {
-    super::draw();
+    Validate();
+    progress.Invalidate();
+    text_progress.Invalidate();
+    screen_t::draw(); // We want to draw over bootloader's screen without flickering/redrawing
 #ifdef _DEBUG
-    static const char dbg[] = "DEBUG";
-    display::DrawText(Rect16(180, 91, 60, 13), string_view_utf8::MakeCPUFLASH((const uint8_t *)dbg), resource_font(IDR_FNT_SMALL), COLOR_BLACK, COLOR_RED);
+    #if HAS_MINI_DISPLAY()
+    display::draw_text(Rect16(180, 91, 60, 16), string_view_utf8::MakeCPUFLASH("DEBUG"), Font::small, COLOR_BLACK, COLOR_RED);
+    #endif
+    #if HAS_LARGE_DISPLAY()
+    display::draw_text(Rect16(340, 130, 60, 16), string_view_utf8::MakeCPUFLASH("DEBUG"), Font::small, COLOR_BLACK, COLOR_RED);
+    #endif
 #endif //_DEBUG
 }
 
-void screen_splash_data_t::windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) {
-#ifdef _EXTUI
-    if (event == GUI_event_t::GUI_STARTUP) { //without clear it could run multiple times before screen is closed
+/**
+ * @brief this callback must be called in GUI thread
+ * also it must be called manually before main gui loop
+ * no events can be fired during that period and gui_redraw() must be called manually
+ *
+ * @param percent value for progressbar
+ * @param str string to show instead loading
+ */
+void screen_splash_data_t::bootstrap_cb(unsigned percent, std::optional<const char *> str) {
+    GUIStartupProgress progr = { percent, str };
+    event_conversion_union un;
+    un.pGUIStartupProgress = &progr;
+    Screens::Access()->WindowEvent(GUI_event_t::GUI_STARTUP, un.pvoid);
+}
 
-        uint32_t percent = uint32_t(param);
-        progress.SetValue((percent < 99) ? percent : 99);
-
-        if (percent > 99) {
-            /*if (marlin_event(MARLIN_EVT_StartProcessing)) {
-        // Originally these lines should be immediately after marlin_client_init, but because the functions are blocking
-        // and we want the gui thread alive, we moved the lines here.
-        marlin_client_set_event_notify(MARLIN_EVT_MSK_DEF);
-        marlin_client_set_change_notify(MARLIN_VAR_MSK_DEF);
-        Screens::Access()->Close();
-        */
-
-            const bool run_selftest = variant_get_ui8(eeprom_get_var(EEVAR_RUN_SELFTEST)) ? 1 : 0;
-            const bool run_xyzcalib = variant_get_ui8(eeprom_get_var(EEVAR_RUN_XYZCALIB)) ? 1 : 0;
-            const bool run_firstlay = variant_get_ui8(eeprom_get_var(EEVAR_RUN_FIRSTLAY)) ? 1 : 0;
-            const bool run_wizard = (run_selftest && run_xyzcalib && run_firstlay);
-            const bool run_lang = !LangEEPROM::getInstance().IsValid();
-
-            const ScreenFactory::Creator screens[] {
-                run_lang ? GetScreenMenuLanguagesNoRet : nullptr,          // lang
-                run_wizard ? ScreenFactory::Screen<ScreenWizard> : nullptr // wizard
-            };
-            Screens::Access()->PushBeforeCurrent(screens, screens + (sizeof(screens) / sizeof(screens[0])));
-            Screens::Access()->Close();
+void screen_splash_data_t::windowEvent([[maybe_unused]] window_t *sender, GUI_event_t event, void *param) {
+    if (event == GUI_event_t::GUI_STARTUP) { // without clear it could run multiple times before screen is closed
+        if (!param) {
+            return;
         }
-#else
-    if (HAL_GetTick() > 3000) {
-        Screens::Access()->Close();
-#endif
+
+        event_conversion_union un;
+        un.pvoid = param;
+        if (!un.pGUIStartupProgress) {
+            return;
+        }
+        int percent = un.pGUIStartupProgress->percent_done;
+
+        // Bootstrap & FW version are displayed in the same space - we want to display what process is happening during bootstrap
+        // If such a process description is not available (e.g: fw_gui_splash_progress()) - draw FW version (only once to avoid flickering)
+        if (un.pGUIStartupProgress->bootstrap_description.has_value()) {
+            strlcpy(text_progress_buffer, un.pGUIStartupProgress->bootstrap_description.value(), sizeof(text_progress_buffer));
+            text_progress.SetText(string_view_utf8::MakeRAM(text_progress_buffer));
+            text_progress.Invalidate();
+            version_displayed = false;
+        } else {
+            if (!version_displayed) {
+                snprintf(text_progress_buffer, sizeof(text_progress_buffer), "Firmware %s", version::project_version_full);
+                text_progress.SetText(string_view_utf8::MakeRAM(text_progress_buffer));
+                text_progress.Invalidate();
+                version_displayed = true;
+            }
+        }
+
+        progress.SetProgressPercent(std::clamp(percent, 0, 100));
     }
 }

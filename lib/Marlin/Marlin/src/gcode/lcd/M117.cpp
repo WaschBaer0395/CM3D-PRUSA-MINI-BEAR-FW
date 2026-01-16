@@ -23,14 +23,33 @@
 #include "../gcode.h"
 #include "../../lcd/ultralcd.h"
 
+#include <feature/print_status_message/print_status_message_mgr.hpp>
+
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M117: Set LCD Status Message
+ *### M117: Set LCD Status Message <a href="https://reprap.org/wiki/G-code#M117:_Display_Message">M117: Display Message</a>
+ *
+ *#### Usage
+ *
+ *    M117 [string]
+ *
+ *#### Parameters
+ *
+ * - `[string]` - Message string.
+ *
+ *#### Examples
+ *
+ *    M117 Hello World ; Displays on LCD the message "Hello World"
  */
 void GcodeSuite::M117() {
-
-  if (parser.string_arg && parser.string_arg[0])
-    ui.set_status(parser.string_arg);
-  else
-    ui.reset_status();
-
+    if (parser.string_arg && parser.string_arg[0]) {
+        print_status_message().show_temporary<PrintStatusMessage::custom>({ std::shared_ptr<const char[]>(strdup(parser.string_arg), [](char *str) { free(str); }) });
+    } else {
+        print_status_message().clear_temporary();
+    }
 }
+
+/** @}*/

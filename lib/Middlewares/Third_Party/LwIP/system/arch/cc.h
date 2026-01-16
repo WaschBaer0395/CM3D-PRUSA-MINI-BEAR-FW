@@ -80,9 +80,39 @@ typedef int sys_prot_t;
 
 #endif
 
-// TODO: Implement proper implementation
-#define LWIP_PLATFORM_ASSERT(x) do { \
-    } while(0)
+#define DEPAREN(X) ESC(ISH X)
+#define ISH(...) ISH __VA_ARGS__
+#define ESC(...) ESC_(__VA_ARGS__)
+#define ESC_(...) VAN ## __VA_ARGS__
+#define VANISH
+
+void lwip_platform_log_info(const char *fmt, ...);
+
+#define LWIP_PLATFORM_DIAG(x) lwip_platform_log_info(DEPAREN(x))
+
+#ifdef _DEBUG
+#define LWIP_PLATFORM_ASSERT(x)                                             \
+    do {                                                                    \
+        extern void lwip_platform_assert(const char*, const char*, int);    \
+        lwip_platform_assert(x, __FILE__, __LINE__);                        \
+    } while (0)
+#else
+#define LWIP_PLATFORM_ASSERT(x)                                             \
+    do {                                                                    \
+        extern void lwip_platform_assert(const char*, const char*, int);    \
+        lwip_platform_assert(x, "<unknown>", 0);                            \
+    } while (0)
+#endif
+
+
+#define LWIP_ERROR(message, expression, handler) \
+    do {                                         \
+        if (!(expression)) {                     \
+            extern void lwip_platform_log_error(const char*); \
+            lwip_platform_log_error(message); \
+            handler;                             \
+        }                                        \
+    } while (0)
 
 /* Define random number generator function */
 #define LWIP_RAND() ((u32_t)rand())
@@ -96,9 +126,11 @@ extern uint8_t __attribute__((section(".ccmram"))) memp_memory_FRAG_PBUF_base[];
 extern uint8_t __attribute__((section(".ccmram"))) memp_memory_TCPIP_MSG_API_base[];
 extern uint8_t __attribute__((section(".ccmram"))) memp_memory_TCP_PCB_base[];
 extern uint8_t __attribute__((section(".ccmram"))) memp_memory_PBUF_base[];
+#if 0
 extern uint8_t __attribute__((section(".ccmram"))) memp_memory_PBUF_POOL_base[];
+#endif
 extern uint8_t __attribute__((section(".ccmram"))) memp_memory_TCPIP_MSG_INPKT_base[];
-extern uint8_t __attribute__((section(".ccmram"))) memp_memory_TCP_PCB_LISTEN_base[];
-extern uint8_t __attribute__((section(".ccmram"))) memp_memory_REASSDATA_base[];
+extern uint8_t memp_memory_TCP_PCB_LISTEN_base[];
+extern uint8_t memp_memory_REASSDATA_base[];
 
 #endif /* __CC_H__ */

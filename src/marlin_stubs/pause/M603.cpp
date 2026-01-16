@@ -20,7 +20,7 @@
  *
  */
 
-#include "../../../lib/Marlin/Marlin/src/inc/MarlinConfig.h"
+#include "config_features.h"
 
 #if ENABLED(ADVANCED_PAUSE_FEATURE)
 
@@ -33,19 +33,29 @@
         #include "../../../lib/Marlin/Marlin/src/module/tool_change.h"
     #endif
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M603: Configure filament change
+ *### M603: Configure filament change <a href="https://reprap.org/wiki/G-code#M603:_Configure_Filament_Change">M603: Configure Filament Change</a>
  *
- *  T[toolhead] - Select extruder to configure, active extruder if not specified
- *  U[distance] - Retract distance for removal, for the specified extruder
- *  L[distance] - Extrude distance for insertion, for the specified extruder
+ *#### Usage
  *
+ *    M603 [ T | U | L ]
+ *
+ *#### Parameters
+ *
+ * - `T` - Target extruder
+ * - `U` - Amount of retraction for unload (negative)
+ * - `L` - Load length, longer for bowden (positive)
  */
 void GcodeSuite::M603() {
 
     const int8_t target_extruder = get_target_extruder_from_command();
-    if (target_extruder < 0)
+    if (target_extruder < 0) {
         return;
+    }
 
     // Unload length
     if (parser.seen('U')) {
@@ -63,5 +73,7 @@ void GcodeSuite::M603() {
     #endif
     }
 }
+
+/** @}*/
 
 #endif // ADVANCED_PAUSE_FEATURE

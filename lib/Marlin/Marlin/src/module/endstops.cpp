@@ -28,24 +28,21 @@
 #include "stepper.h"
 
 #include "../Marlin.h"
-#include "../sd/cardreader.h"
 #include "temperature.h"
 #include "../lcd/ultralcd.h"
+#include <option/has_loadcell.h>
+#include <option/has_toolchanger.h>
 
 #if ENABLED(ENDSTOP_INTERRUPTS_FEATURE)
   #include HAL_PATH(../HAL, endstop_interrupts.h)
-#endif
-
-#if BOTH(SD_ABORT_ON_ENDSTOP_HIT, SDSUPPORT)
-  #include "printcounter.h" // for print_job_timer
 #endif
 
 #if ENABLED(BLTOUCH)
   #include "../feature/bltouch.h"
 #endif
 
-#if ENABLED(JOYSTICK)
-  #include "../feature/joystick.h"
+#if HAS_LOADCELL()
+  #include "loadcell.hpp"
 #endif
 
 Endstops endstops;
@@ -63,7 +60,11 @@ Endstops::esbits_t Endstops::live_state = 0;
 #endif
 
 #if HAS_BED_PROBE
-  volatile bool Endstops::z_probe_enabled = false;
+  std::atomic<bool> Endstops::z_probe_enabled { false };
+#endif
+
+#ifdef PRUSA_TOOLCHANGER
+  std::atomic<bool> Endstops::xy_probe_enabled { false };
 #endif
 
 // Initialized by settings.load()
@@ -80,10 +81,7 @@ Endstops::esbits_t Endstops::live_state = 0;
   float Endstops::z3_endstop_adj;
 #endif
 
-#if ENABLED(SPI_ENDSTOPS)
-  Endstops::tmc_spi_homing_t Endstops::tmc_spi_homing; // = 0
-#endif
-#if ENABLED(IMPROVE_HOMING_RELIABILITY)
+#if ENABLED(IMPROVE_HOMING_RELIABILITY) && HOMING_SG_GUARD_DURATION > 0
   millis_t sg_guard_period; // = 0
 #endif
 
@@ -280,6 +278,17 @@ void Endstops::poll() {
   #elif ENDSTOP_NOISE_THRESHOLD
     if (endstop_poll_count) update();
   #endif
+
+  // Call Loadcell::HomingSafetyCheck when homing (safeguard to stop homing when loadcell samples stop comming)
+  #if HAS_LOADCELL()
+  bool is_homing = z_probe_enabled;
+  #if HAS_TOOLCHANGER()
+  is_homing = is_homing || xy_probe_enabled;
+  #endif
+  if (is_homing) {
+    loadcell.HomingSafetyCheck();
+  }
+  #endif
 }
 
 void Endstops::enable_globally(const bool onoff) {
@@ -293,7 +302,7 @@ void Endstops::enable(const bool onoff) {
   resync();
 }
 
-// Disable / Enable endstops based on ENSTOPS_ONLY_FOR_HOMING and global enable
+// Disable / Enable endstops based on ENDSTOPS_ONLY_FOR_HOMING and global enable
 void Endstops::not_homing() {
   enabled = enabled_globally;
 }
@@ -310,6 +319,14 @@ void Endstops::not_homing() {
 #if HAS_BED_PROBE
   void Endstops::enable_z_probe(const bool onoff) {
     z_probe_enabled = onoff;
+    resync();
+  }
+#endif
+
+// Enable / disable endstop xy-probe checking
+#ifdef PRUSA_TOOLCHANGER
+  void Endstops::enable_xy_probe(const bool onoff) {
+    xy_probe_enabled = onoff;
     resync();
   }
 #endif
@@ -341,12 +358,7 @@ void Endstops::resync() {
 void Endstops::event_handler() {
   static uint8_t prev_hit_state; // = 0
   if (hit_state && hit_state != prev_hit_state) {
-    #if HAS_SPI_LCD
-      char chrX = ' ', chrY = ' ', chrZ = ' ', chrP = ' ';
-      #define _SET_STOP_CHAR(A,C) (chr## A = C)
-    #else
-      #define _SET_STOP_CHAR(A,C) ;
-    #endif
+    #define _SET_STOP_CHAR(A,C) ;
 
     #define _ENDSTOP_HIT_ECHO(A,C) do{ \
       SERIAL_ECHOPAIR(" " STRINGIFY(A) ":", planner.triggered_position_mm(_AXIS(A))); \
@@ -371,19 +383,6 @@ void Endstops::event_handler() {
       if (TEST(hit_state, Z_MIN_PROBE)) _ENDSTOP_HIT_ECHO(P, 'P');
     #endif
     SERIAL_EOL();
-
-    #if HAS_SPI_LCD
-      ui.status_printf_P(0, PSTR(S_FMT " %c %c %c %c"), GET_TEXT(MSG_LCD_ENDSTOPS), chrX, chrY, chrZ, chrP);
-    #endif
-
-    #if BOTH(SD_ABORT_ON_ENDSTOP_HIT, SDSUPPORT)
-      if (planner.abort_on_endstop_hit) {
-        card.stopSDPrint();
-        quickstop_stepper();
-        thermalManager.disable_all_heaters();
-        print_job_timer.stop();
-      }
-    #endif
   }
   prev_hit_state = hit_state;
 }
@@ -395,7 +394,7 @@ static void print_es_state(const bool is_hit, PGM_P const label=nullptr) {
   SERIAL_EOL();
 }
 
-void _O2 Endstops::M119() {
+void __O2 Endstops::M119() {
   #if ENABLED(BLTOUCH)
     bltouch._set_SW_mode();
   #endif
@@ -478,11 +477,6 @@ void _O2 Endstops::M119() {
   #if ENABLED(BLTOUCH)
     bltouch._reset_SW_mode();
   #endif
-
-  #if ENABLED(JOYSTICK_DEBUG)
-    joystick.report();
-  #endif
-
 } // Endstops::M119
 
 // The following routines are called from an ISR context. It could be the temperature ISR, the
@@ -537,7 +531,7 @@ void Endstops::update() {
   /**
    * Check and update endstops
    */
-  #if HAS_X_MIN && !X_SPI_SENSORLESS
+  #if HAS_X_MIN
     UPDATE_ENDSTOP_BIT(X, MIN);
     #if ENABLED(X_DUAL_ENDSTOPS)
       #if HAS_X2_MIN
@@ -548,7 +542,7 @@ void Endstops::update() {
     #endif
   #endif
 
-  #if HAS_X_MAX && !X_SPI_SENSORLESS
+  #if HAS_X_MAX
     UPDATE_ENDSTOP_BIT(X, MAX);
     #if ENABLED(X_DUAL_ENDSTOPS)
       #if HAS_X2_MAX
@@ -559,7 +553,7 @@ void Endstops::update() {
     #endif
   #endif
 
-  #if HAS_Y_MIN && !Y_SPI_SENSORLESS
+  #if HAS_Y_MIN
     UPDATE_ENDSTOP_BIT(Y, MIN);
     #if ENABLED(Y_DUAL_ENDSTOPS)
       #if HAS_Y2_MIN
@@ -570,7 +564,7 @@ void Endstops::update() {
     #endif
   #endif
 
-  #if HAS_Y_MAX && !Y_SPI_SENSORLESS
+  #if HAS_Y_MAX
     UPDATE_ENDSTOP_BIT(Y, MAX);
     #if ENABLED(Y_DUAL_ENDSTOPS)
       #if HAS_Y2_MAX
@@ -581,7 +575,7 @@ void Endstops::update() {
     #endif
   #endif
 
-  #if HAS_Z_MIN && !Z_SPI_SENSORLESS
+  #if HAS_Z_MIN
     UPDATE_ENDSTOP_BIT(Z, MIN);
     #if Z_MULTI_ENDSTOPS
       #if HAS_Z2_MIN
@@ -604,7 +598,7 @@ void Endstops::update() {
     UPDATE_ENDSTOP_BIT(Z, MIN_PROBE);
   #endif
 
-  #if HAS_Z_MAX && !Z_SPI_SENSORLESS
+  #if HAS_Z_MAX
     // Check both Z dual endstops
     #if Z_MULTI_ENDSTOPS
       UPDATE_ENDSTOP_BIT(Z, MAX);
@@ -703,7 +697,7 @@ void Endstops::update() {
   // Now, we must signal, after validation, if an endstop limit is pressed or not
   if (stepper.axis_is_moving(X_AXIS)) {
     if (stepper.motor_direction(X_AXIS_HEAD)) { // -direction
-      #if HAS_X_MIN || (X_SPI_SENSORLESS && X_HOME_DIR < 0)
+      #if HAS_X_MIN
         #if ENABLED(X_DUAL_ENDSTOPS)
           PROCESS_DUAL_ENDSTOP(X, X2, MIN);
         #else
@@ -712,7 +706,7 @@ void Endstops::update() {
       #endif
     }
     else { // +direction
-      #if HAS_X_MAX || (X_SPI_SENSORLESS && X_HOME_DIR > 0)
+      #if HAS_X_MAX
         #if ENABLED(X_DUAL_ENDSTOPS)
           PROCESS_DUAL_ENDSTOP(X, X2, MAX);
         #else
@@ -722,9 +716,32 @@ void Endstops::update() {
     }
   }
 
+// Handle XY probing
+#if BOARD_IS_XLBUDDY()
+  // TODO: This does not clean the endstop bits on xy_probe disable. It cannot as it might clear the real endstops.
+  // The hit_on_purpose is supposed to be called cleaning the bits.
+  if(stepper.axis_is_moving(X_AXIS)) {
+    if(xy_probe_enabled) {
+      SET_BIT_TO(live_state, _ENDSTOP(X, MIN), READ(MARLIN_PIN(XY_PROBE)) != XY_PROBE_ENDSTOP_INVERTING && stepper.motor_direction(X_AXIS_HEAD));
+      PROCESS_ENDSTOP(X, MIN);
+      SET_BIT_TO(live_state, _ENDSTOP(X, MAX), READ(MARLIN_PIN(XY_PROBE)) != XY_PROBE_ENDSTOP_INVERTING && !stepper.motor_direction(X_AXIS_HEAD));
+      PROCESS_ENDSTOP(X, MAX);
+    }
+  }
+  if(stepper.axis_is_moving(Y_AXIS)) {
+    if(xy_probe_enabled) {
+      SET_BIT_TO(live_state, _ENDSTOP(Y, MIN), READ(MARLIN_PIN(XY_PROBE)) != XY_PROBE_ENDSTOP_INVERTING && stepper.motor_direction(Y_AXIS_HEAD));
+      PROCESS_ENDSTOP(Y, MIN);
+      SET_BIT_TO(live_state, _ENDSTOP(Y, MAX), READ(MARLIN_PIN(XY_PROBE)) != XY_PROBE_ENDSTOP_INVERTING && !stepper.motor_direction(Y_AXIS_HEAD));
+      PROCESS_ENDSTOP(Y, MAX);
+    }
+  }
+#endif
+
+
   if (stepper.axis_is_moving(Y_AXIS)) {
     if (stepper.motor_direction(Y_AXIS_HEAD)) { // -direction
-      #if HAS_Y_MIN || (Y_SPI_SENSORLESS && Y_HOME_DIR < 0)
+      #if HAS_Y_MIN
         #if ENABLED(Y_DUAL_ENDSTOPS)
           PROCESS_DUAL_ENDSTOP(Y, Y2, MIN);
         #else
@@ -733,7 +750,7 @@ void Endstops::update() {
       #endif
     }
     else { // +direction
-      #if HAS_Y_MAX || (Y_SPI_SENSORLESS && Y_HOME_DIR > 0)
+      #if HAS_Y_MAX
         #if ENABLED(Y_DUAL_ENDSTOPS)
           PROCESS_DUAL_ENDSTOP(Y, Y2, MAX);
         #else
@@ -745,13 +762,15 @@ void Endstops::update() {
 
   if (stepper.axis_is_moving(Z_AXIS)) {
     if (stepper.motor_direction(Z_AXIS_HEAD)) { // Z -direction. Gantry down, bed up.
-      #if HAS_Z_MIN || (Z_SPI_SENSORLESS && Z_HOME_DIR < 0)
+      #if HAS_Z_MIN
         #if ENABLED(Z_TRIPLE_ENDSTOPS)
           PROCESS_TRIPLE_ENDSTOP(Z, Z2, Z3, MIN);
         #elif ENABLED(Z_DUAL_ENDSTOPS)
           PROCESS_DUAL_ENDSTOP(Z, Z2, MIN);
         #else
-          #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
+          #if HAS_LOADCELL()
+            PROCESS_ENDSTOP(Z, MIN); // Loadcell is disabled elsewhere
+          #elif ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
             if (z_probe_enabled) PROCESS_ENDSTOP(Z, MIN);
           #elif HAS_CUSTOM_PROBE_PIN
             if (!z_probe_enabled) PROCESS_ENDSTOP(Z, MIN);
@@ -767,7 +786,7 @@ void Endstops::update() {
       #endif
     }
     else { // Z +direction. Gantry up, bed down.
-      #if HAS_Z_MAX || (Z_SPI_SENSORLESS && Z_HOME_DIR > 0)
+      #if HAS_Z_MAX
         #if ENABLED(Z_TRIPLE_ENDSTOPS)
           PROCESS_TRIPLE_ENDSTOP(Z, Z2, Z3, MAX);
         #elif ENABLED(Z_DUAL_ENDSTOPS)
@@ -782,48 +801,26 @@ void Endstops::update() {
   }
 } // Endstops::update()
 
-#if ENABLED(SPI_ENDSTOPS)
-
-  #define X_STOP (X_HOME_DIR < 0 ? X_MIN : X_MAX)
-  #define Y_STOP (Y_HOME_DIR < 0 ? Y_MIN : Y_MAX)
-  #define Z_STOP (Z_HOME_DIR < 0 ? Z_MIN : Z_MAX)
-
-  bool Endstops::tmc_spi_homing_check() {
-    bool hit = false;
-    #if X_SPI_SENSORLESS
-      if (tmc_spi_homing.x && stepperX.test_stall_status()) {
-        SBI(live_state, X_STOP);
-        hit = true;
-      }
-    #endif
-    #if Y_SPI_SENSORLESS
-      if (tmc_spi_homing.y && stepperY.test_stall_status()) {
-        SBI(live_state, Y_STOP);
-        hit = true;
-      }
-    #endif
-    #if Z_SPI_SENSORLESS
-      if (tmc_spi_homing.z && stepperZ.test_stall_status()) {
-        SBI(live_state, Z_STOP);
-        hit = true;
-      }
-    #endif
-    return hit;
-  }
-
-  void Endstops::clear_endstop_state() {
-    #if X_SPI_SENSORLESS
-      CBI(live_state, X_STOP);
-    #endif
-    #if Y_SPI_SENSORLESS
-      CBI(live_state, Y_STOP);
-    #endif
-    #if Z_SPI_SENSORLESS
-      CBI(live_state, Z_STOP);
-    #endif
-  }
-
-#endif // SPI_ENDSTOPS
+void Endstops::trigger_endstop(EndstopEnum endstop) {
+  hit_state |= (1 << endstop);
+  switch(endstop) {
+  case X_MIN:
+  case X_MAX:
+    planner.endstop_triggered(X_AXIS);
+    break;
+  case Y_MIN:
+  case Y_MAX:
+    planner.endstop_triggered(Y_AXIS);
+    break;
+  case Z_MIN:
+  case Z_MAX:
+  case Z_MIN_PROBE:
+    planner.endstop_triggered(Z_AXIS);
+    break;
+  default:
+    bsod("unhandled endstop triggered");
+  };
+}
 
 #if ENABLED(PINS_DEBUGGING)
 

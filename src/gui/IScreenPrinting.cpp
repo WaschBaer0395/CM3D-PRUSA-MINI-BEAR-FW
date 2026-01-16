@@ -1,19 +1,16 @@
 #include "IScreenPrinting.hpp"
 #include "config.h"
-#include "marlin_client.h"
-#include "marlin_server.h"
-#include "guitypes.hpp"    //font_meas_text
-#include "stm32f4xx_hal.h" //HAL_GetTick
 #include "i18n.h"
 #include "ScreenHandler.hpp"
+#include "img_resources.hpp"
 
-IScreenPrinting::IScreenPrinting(string_view_utf8 caption)
-    : AddSuperWindow<screen_t>()
+IScreenPrinting::IScreenPrinting(const string_view_utf8 &caption)
+    : screen_t()
     , header(this)
     , footer(this) {
     IScreenPrinting::ClrMenuTimeoutClose(); // don't close on menu timeout
     header.SetText(caption);
-    header.SetIcon(IDR_PNG_print_16px);
+    header.SetIcon(&img::print_16x16);
     ths = this;
 }
 
@@ -24,18 +21,21 @@ IScreenPrinting::~IScreenPrinting() {
 IScreenPrinting *IScreenPrinting::ths = nullptr;
 
 /******************************************************************************/
-//static methods to be pointed by fnc pointers
+// static methods to be pointed by fnc pointers
 void IScreenPrinting::StopAction() {
-    if (IScreenPrinting::ths)
+    if (IScreenPrinting::ths) {
         IScreenPrinting::ths->stopAction();
+    }
 }
 void IScreenPrinting::PauseAction() {
-    if (IScreenPrinting::ths)
+    if (IScreenPrinting::ths) {
         IScreenPrinting::ths->pauseAction();
+    }
 }
 void IScreenPrinting::TuneAction() {
-    if (IScreenPrinting::ths)
+    if (IScreenPrinting::ths) {
         IScreenPrinting::ths->tuneAction();
+    }
 }
 
 IScreenPrinting *IScreenPrinting::GetInstance() {
@@ -43,6 +43,7 @@ IScreenPrinting *IScreenPrinting::GetInstance() {
 }
 
 void IScreenPrinting::NotifyMarlinStart() {
-    if (ths)
+    if (ths) {
         ths->notifyMarlinStart();
+    }
 }

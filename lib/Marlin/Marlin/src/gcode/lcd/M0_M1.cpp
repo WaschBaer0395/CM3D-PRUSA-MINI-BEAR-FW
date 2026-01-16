@@ -27,27 +27,40 @@
 #include "../gcode.h"
 #include "../../module/stepper.h"
 
-#if HAS_LCD_MENU
-  #include "../../lcd/ultralcd.h"
-#endif
-
 #if ENABLED(EXTENSIBLE_UI)
   #include "../../lcd/extensible_ui/ui_api.h"
-#endif
-
-#include "../../sd/cardreader.h"
-
-#if HAS_LEDS_OFF_FLAG
-  #include "../../feature/leds/printer_event_leds.h"
 #endif
 
 #if ENABLED(HOST_PROMPT_SUPPORT)
   #include "../../feature/host_actions.h"
 #endif
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M0: Unconditional stop - Wait for user button press on LCD
- * M1: Conditional stop   - Wait for user button press on LCD
+ *### M0: Unconditional stop - Wait for user button press on LCD <a href="https://reprap.org/wiki/G-code#M0:_Stop_or_Unconditional_stop">M0: Stop or Unconditional stop</a>
+ *
+ *#### Usage
+ *
+ *    M0 [ P | S ]
+ *
+ *#### Parameters
+ *
+ *  - `P` - Milliseconds to wait
+ *  - `S` - Seconds to wait (priority)
+ *
+ *### M1: Conditional stop   - Wait for user button press on LCD <a href="https://reprap.org/wiki/G-code#M1:_Sleep_or_Conditional_stop">M1: Sleep or Conditional stop</a>
+ *
+ *#### Usage
+ *
+ *    M1 [ P | S ]
+ *
+ *#### Parameters
+ *
+ *  - `P` - Milliseconds to wait
+ *  - `S` - Seconds to wait (priority)
  */
 void GcodeSuite::M0_M1() {
   const char * const args = parser.string_arg;
@@ -67,18 +80,7 @@ void GcodeSuite::M0_M1() {
 
   planner.synchronize();
 
-  #if HAS_LCD_MENU
-
-    if (has_message)
-      ui.set_status(args, true);
-    else {
-      LCD_MESSAGEPGM(MSG_USERWAIT);
-      #if ENABLED(LCD_PROGRESS_BAR) && PROGRESS_MSG_EXPIRE > 0
-        ui.reset_progress_bar_timeout();
-      #endif
-    }
-
-  #elif ENABLED(EXTENSIBLE_UI)
+  #if ENABLED(EXTENSIBLE_UI)
 
     if (has_message)
       ExtUI::onUserConfirmRequired(args); // Can this take an SRAM string??
@@ -106,20 +108,14 @@ void GcodeSuite::M0_M1() {
 
   if (ms > 0) {
     ms += millis();  // wait until this time for a click
-    while (PENDING(millis(), ms) && wait_for_user) idle();
+    while (PENDING(millis(), ms) && wait_for_user) idle(true);
   }
   else
-    while (wait_for_user) idle();
-
-  #if HAS_LEDS_OFF_FLAG
-    printerEventLEDs.onResumeAfterWait();
-  #endif
-
-  #if HAS_LCD_MENU
-    ui.reset_status();
-  #endif
+    while (wait_for_user) idle(true);
 
   wait_for_user = false;
 }
+
+/** @}*/
 
 #endif // HAS_RESUME_CONTINUE

@@ -27,8 +27,26 @@
 #include "../../gcode.h"
 #include "../../../feature/tmc_util.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M122: Debug TMC drivers
+ *### M122: Debug TMC drivers <a href="https://reprap.org/wiki/G-code#M122:_Debug_Stepper_drivers_.28Marlin.29">M122: Debug Stepper drivers (Marlin)</a>
+ *
+ *#### Usage
+ *
+ *    M122 [ X | Y | Z | E | S | P | V ]
+ *
+ * #### Parameters
+ *
+ * - `X` - Debug X axis TMC driver
+ * - `Y` - Debug Y axis TMC driver
+ * - `Z` - Debug Z axis TMC driver
+ * - `E` - Debug E axis TMC driver
+ * - `S` - Flag to enable/disable continuous debug reporting.
+ * - `P` - Interval between continuous debug reports, in milliseconds.
+ * - `V` - Report raw register data. Refer to the datasheet to decipher the report.
  */
 void GcodeSuite::M122() {
   xyze_bool_t print_axis = { false, false, false, false };
@@ -52,5 +70,7 @@ void GcodeSuite::M122() {
 
   test_tmc_connection(print_axis.x, print_axis.y, print_axis.z, print_axis.e);
 }
+
+/** @}*/
 
 #endif // HAS_TRINAMIC

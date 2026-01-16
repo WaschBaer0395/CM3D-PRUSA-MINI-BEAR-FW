@@ -28,13 +28,17 @@
 #include "../inc/MarlinConfig.h"
 #include <stdint.h>
 
+#if HAS_BED_PROBE || defined(PRUSA_TOOLCHANGER)
+#include <atomic>
+#endif
+
 enum EndstopEnum : char {
   X_MIN,  Y_MIN,  Z_MIN,  Z_MIN_PROBE,
   X_MAX,  Y_MAX,  Z_MAX,
   X2_MIN, X2_MAX,
   Y2_MIN, Y2_MAX,
   Z2_MIN, Z2_MAX,
-  Z3_MIN, Z3_MAX
+  Z3_MIN, Z3_MAX, XY_PROBE
 };
 
 class Endstops {
@@ -83,9 +87,13 @@ class Endstops {
         #if HAS_BED_PROBE
           || z_probe_enabled
         #endif
+        #ifdef PRUSA_TOOLCHANGER
+          || xy_probe_enabled
+        #endif
       );
     }
 
+    static inline bool is_enabled() { return enabled; }
     static inline bool global_enabled() { return enabled_globally; }
 
     /**
@@ -144,13 +152,28 @@ class Endstops {
       FORCE_INLINE static void validate_homing_move() { hit_on_purpose(); }
     #endif
 
+    // Trigger a software endstop
+    void trigger_endstop(EndstopEnum endstop);
+
     // Clear endstops (i.e., they were hit intentionally) to suppress the report
     FORCE_INLINE static void hit_on_purpose() { hit_state = 0; }
 
     // Enable / disable endstop z-probe checking
     #if HAS_BED_PROBE
-      static volatile bool z_probe_enabled;
-      static void enable_z_probe(const bool onoff=true);
+      static std::atomic<bool> z_probe_enabled;
+
+      static void enable_z_probe(const bool onoff = true);
+
+      /**
+       * @brief Check if z_probe_enabled is true.
+       */
+      static inline bool is_z_probe_enabled() { return z_probe_enabled.load(); }
+    #endif
+
+    // Enable / disable endstop xy-probe checking
+    #ifdef PRUSA_TOOLCHANGER
+      static std::atomic<bool> xy_probe_enabled;
+      static void enable_xy_probe(const bool onoff=true);
     #endif
 
     static void resync();
@@ -160,18 +183,6 @@ class Endstops {
       static bool monitor_flag;
       static void monitor();
       static void run_monitor();
-    #endif
-
-    #if ENABLED(SPI_ENDSTOPS)
-      typedef struct {
-        union {
-          bool any;
-          struct { bool x:1, y:1, z:1; };
-        };
-      } tmc_spi_homing_t;
-      static tmc_spi_homing_t tmc_spi_homing;
-      static void clear_endstop_state();
-      static bool tmc_spi_homing_check();
     #endif
 };
 

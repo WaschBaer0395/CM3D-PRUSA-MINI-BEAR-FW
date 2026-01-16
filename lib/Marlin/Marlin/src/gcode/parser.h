@@ -245,7 +245,7 @@ public:
 
   // Code value as a long or ulong
   static inline int32_t value_long() { return value_ptr ? strtol(value_ptr, nullptr, 10) : 0L; }
-  static inline uint32_t value_ulong() { return value_ptr ? strtoul(value_ptr, nullptr, 10) : 0UL; }
+  static inline uint32_t value_ulong(int16_t base = 10) { return value_ptr ? strtoul(value_ptr, nullptr, base) : 0UL; }
 
   // Code value for use as time
   static inline millis_t value_millis() { return value_ulong(); }
@@ -307,28 +307,6 @@ public:
 
     static inline void set_input_temp_units(const TempUnit units) { input_temp_units = units; }
 
-    #if HAS_LCD_MENU && DISABLED(DISABLE_M503)
-
-      static inline char temp_units_code() {
-        return input_temp_units == TEMPUNIT_K ? 'K' : input_temp_units == TEMPUNIT_F ? 'F' : 'C';
-      }
-      static inline PGM_P temp_units_name() {
-        return input_temp_units == TEMPUNIT_K ? PSTR("Kelvin") : input_temp_units == TEMPUNIT_F ? PSTR("Fahrenheit") : PSTR("Celsius");
-      }
-      static inline float to_temp_units(const float &f) {
-        switch (input_temp_units) {
-          case TEMPUNIT_F:
-            return f * 0.5555555556f + 32;
-          case TEMPUNIT_K:
-            return f + 273.15f;
-          case TEMPUNIT_C:
-          default:
-            return f;
-        }
-      }
-
-    #endif // HAS_LCD_MENU && !DISABLE_M503
-
     static inline float value_celsius() {
       const float f = value_float();
       switch (input_temp_units) {
@@ -366,6 +344,8 @@ public:
 
   static inline feedRate_t value_feedrate() { return MMM_TO_MMS(value_linear_units()); }
 
+  const char *get_command() const { return command_ptr; }
+
   void unknown_command_error();
 
   // Provide simple value accessors with default option
@@ -376,6 +356,7 @@ public:
   static inline uint16_t ushortval(const char c, const uint16_t dval=0) { return seenval(c) ? value_ushort()       : dval; }
   static inline int32_t  longval(const char c, const int32_t dval=0)    { return seenval(c) ? value_long()         : dval; }
   static inline uint32_t ulongval(const char c, const uint32_t dval=0)  { return seenval(c) ? value_ulong()        : dval; }
+  static inline uint32_t ulongval_hex(const char c, const uint32_t dval=0) { return seenval(c) ? value_ulong(16)   : dval; }
   static inline float    linearval(const char c, const float dval=0)    { return seenval(c) ? value_linear_units() : dval; }
   static inline float    celsiusval(const char c, const float dval=0)   { return seenval(c) ? value_celsius()      : dval; }
 

@@ -24,54 +24,126 @@
 
 #if FAN_COUNT > 0
 
-#include "../gcode.h"
-#include "../../module/motion.h"
-#include "../../module/temperature.h"
+    #include "../gcode.h"
+    #include "../../module/motion.h"
+    #include "../../module/temperature.h"
+    #include "fanctl.hpp"
+    #include <device/board.h>
+    #include <option/xbuddy_extension_variant_standard.h>
 
-#if ENABLED(SINGLENOZZLE)
-  #define _ALT_P active_extruder
-  #define _CNT_P EXTRUDERS
-#else
-  #define _ALT_P _MIN(active_extruder, FAN_COUNT - 1)
-  #define _CNT_P FAN_COUNT
-#endif
+    #if XBUDDY_EXTENSION_VARIANT_STANDARD()
+        #include <feature/xbuddy_extension/xbuddy_extension.hpp>
+    #endif
+
+    #if ENABLED(SINGLENOZZLE)
+        #define _ALT_P active_extruder
+        #define _CNT_P EXTRUDERS
+    #elif ENABLED(PRUSA_TOOLCHANGER)
+        #define _ALT_P 0
+        #define _CNT_P FAN_COUNT
+    #else
+        #define _ALT_P _MIN(active_extruder, FAN_COUNT - 1)
+        #define _CNT_P FAN_COUNT
+    #endif
+
+static bool set_special_fan_speed(uint8_t fan, uint8_t speed, bool set_auto) {
+    #if XL_ENCLOSURE_SUPPORT()
+    static_assert(FAN_COUNT < 3, "Fan index 3 is reserved for Enclosure fan and should not be set by thermalManager");
+    if (fan == 3) {
+        Fans::enclosure().set_pwm(speed);
+        return true;
+    }
+    #endif
+
+    #if XBUDDY_EXTENSION_VARIANT_STANDARD()
+    using XBE = buddy::XBuddyExtension;
+    static_assert(FAN_COUNT < 3, "Fan 3 is dedicated to extboard");
+    if (fan == 3) {
+        // Cooling fan 2 has shared PWM line
+        buddy::xbuddy_extension().set_fan_target_pwm(XBE::Fan::cooling_fan_1, set_auto ? buddy::XBuddyExtension::FanPWMOrAuto(pwm_auto) : buddy::XBuddyExtension::FanPWM(speed));
+        return true;
+    }
+    if (fan == 4) {
+        buddy::xbuddy_extension().set_fan_target_pwm(XBE::Fan::filtration_fan, set_auto ? buddy::XBuddyExtension::FanPWMOrAuto(pwm_auto) : buddy::XBuddyExtension::FanPWM(speed));
+        return true;
+    }
+    #endif
+
+    return false;
+}
+
+/** \addtogroup G-Codes
+ * @{
+ */
 
 /**
- * M106: Set Fan Speed
+ *### M106: Set Fan Speed <a href="https://reprap.org/wiki/G-code#M106:_Fan_On">M106: Fan On</a>
  *
- *  S<int>   Speed between 0-255
- *  P<index> Fan index, if more than one fan
+ *#### Usage
  *
- * With EXTRA_FAN_SPEED enabled:
+ *   M106 [ S | P | T ]
  *
- *  T<int>   Restore/Use/Set Temporary Speed:
- *           1     = Restore previous speed after T2
- *           2     = Use temporary speed set with T3-255
- *           3-255 = Set the speed for use with T2
+ *#### Parameters
+ *
+ * - `S` - Speed between 0-255
+ * - `P` - Fan index, if more than one fan
+ * - `R` - Set the to auto control (if supported by the fan)
+ * - `A` - ???
+ * - `T` - Restore/Use/Set Temporary Speed: (With EXTRA_FAN_SPEED enabled:)
+ *   - `1` - Restore previous speed after T2
+ *   - `2` - Use temporary speed set with T3-255
+ *   - `3-255`- Set the speed for use with T2
+ *Enclosure fan (index 3) don't support T parameter
  */
 void GcodeSuite::M106() {
-  const uint8_t p = parser.byteval('P', _ALT_P);
+    const uint8_t p = parser.byteval('P', _ALT_P);
 
-  if (p < _CNT_P) {
+    if (set_special_fan_speed(p, std::clamp<uint16_t>(parser.ushortval('S', 255), 0, 255), parser.seen('R'))) {
+        return;
+    }
+
+    if (p < _CNT_P) {
 
     #if ENABLED(EXTRA_FAN_SPEED)
-      const uint16_t t = parser.intval('T');
-      if (t > 0) return thermalManager.set_temp_fan_speed(p, t);
+        const uint16_t t = parser.intval('T');
+        if (t > 0) {
+            return thermalManager.set_temp_fan_speed(p, t);
+        }
     #endif
-    uint16_t d = parser.seen('A') ? thermalManager.fan_speed[active_extruder] : 255;
-    uint16_t s = parser.ushortval('S', d);
-    NOMORE(s, 255U);
+        uint16_t d = parser.seen('A') ? thermalManager.fan_speed[0] : 255;
+        uint16_t s = parser.ushortval('S', d);
+        NOMORE(s, 255U);
+    #if HAS_GCODE_COMPATIBILITY()
+        if (gcode.compatibility.mk4_compatibility_mode) {
+            s = (s * 7) / 10; // Converts speed to 70% of its values
+        }
+    #endif
 
-    thermalManager.set_fan_speed(p, s);
-  }
+        thermalManager.set_fan_speed(p, s);
+    }
 }
 
 /**
- * M107: Fan Off
+ *### M107: Fan Off <a href="https://reprap.org/wiki/G-code#M107:_Fan_Off">M107: Fan Off</a>
+ *
+ *#### Usage
+ *
+ *    M107 [ P ]
+ *
+ *#### Parameters
+ *
+ * - `P` - Fan index
  */
 void GcodeSuite::M107() {
-  const uint8_t p = parser.byteval('P', _ALT_P);
-  thermalManager.set_fan_speed(p, 0);
+    const uint8_t p = parser.byteval('P', _ALT_P);
+
+    if (set_special_fan_speed(p, 0, false)) {
+        return;
+    }
+
+    thermalManager.set_fan_speed(p, 0);
 }
+
+/** @}*/
 
 #endif // FAN_COUNT > 0

@@ -45,18 +45,37 @@ void report_M92(const bool echo=true, const int8_t e=-1) {
   UNUSED_E(e);
 }
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M92: Set axis steps-per-unit for one or more axes, X, Y, Z, and E.
- *      (Follows the same syntax as G92)
+ *### M92: Get/Set axis steps-per-unit <a href="https://reprap.org/wiki/G-code#M92:_Set_axis_steps_per_unit">M92: Set axis_steps_per_unit</a>
  *
- *      With multiple extruders use T to specify which one.
+ * With multiple extruders use T to specify which one.
  *
- *      If no argument is given print the current values.
+ * If no argument is given print the current values.
  *
- *    With MAGIC_NUMBERS_GCODE:
- *      Use 'H' and/or 'L' to get ideal layer-height information.
- *      'H' specifies micro-steps to use. We guess if it's not supplied.
- *      'L' specifies a desired layer height. Nearest good heights are shown.
+ * With MAGIC_NUMBERS_GCODE:
+ * Use 'H' and/or 'L' to get ideal layer-height information.
+ * 'H' specifies micro-steps to use. We guess if it's not supplied.
+ * 'L' specifies a desired layer height. Nearest good heights are shown.
+ *
+ *#### Usage
+ *
+ *    M92 [ X | Y | Z | E | T | H | L ]
+ *
+ *#### Parameters
+ *
+ *  - `X` - Set current position on X axis
+ *  - `Y` - Set current position on Y axis
+ *  - `Z` - Set current position on Z axis
+ *  - `E` - Set current position on E axis
+ *  - `T` - Set current position on E axis of tool
+ *  - `H` - Specifies micro-steps to use. We guess if it's not supplied.     (Not active by default)
+ *  - `L` - Specifies a desired layer height. Nearest good heights are shown (Not active by default)
+ *
+ * Without parameters prints the current steps-per-unit
  */
 void GcodeSuite::M92() {
 
@@ -68,26 +87,42 @@ void GcodeSuite::M92() {
     #if ENABLED(MAGIC_NUMBERS_GCODE)
       "HL"
     #endif
-  )) return report_M92(true, target_extruder);
+  )) {
+    return report_M92(true, target_extruder);
+  }
 
-  LOOP_XYZE(i) {
-    if (parser.seenval(axis_codes[i])) {
-      if (i == E_AXIS) {
-        const float value = parser.value_per_axis_units((AxisEnum)(E_AXIS_N(target_extruder)));
-        if (value < 20) {
-          float factor = planner.settings.axis_steps_per_mm[E_AXIS_N(target_extruder)] / value; // increase e constants if M92 E14 is given for netfab.
-          #if HAS_CLASSIC_E_JERK
-            planner.max_jerk.e *= factor;
-          #endif
-          planner.settings.max_feedrate_mm_s[E_AXIS_N(target_extruder)] *= factor;
-          planner.max_acceleration_steps_per_s2[E_AXIS_N(target_extruder)] *= factor;
+  // We need to synchronize before we can change axis steps per unit
+  planner.synchronize();
+  if (planner.draining()) {
+    return;
+  }
+
+  {
+    auto s = planner.user_settings;
+
+    LOOP_XYZE(i) {
+      if (parser.seenval(axis_codes[i])) {
+        if (i == E_AXIS) {
+          const float value = parser.value_per_axis_units((AxisEnum)(E_AXIS_N(target_extruder)));
+          if (value < 20) {
+            float factor = planner.settings.axis_steps_per_mm[E_AXIS_N(target_extruder)] / value; // increase e constants if M92 E14 is given for netfab.
+            #if HAS_CLASSIC_E_JERK
+              s.max_jerk.e *= factor;
+            #endif
+            s.max_feedrate_mm_s[E_AXIS_N(target_extruder)] *= factor;
+            planner.max_acceleration_msteps_per_s2[E_AXIS_N(target_extruder)] *= factor;
+          }
+          s.axis_steps_per_mm[E_AXIS_N(target_extruder)] = value;
+          s.axis_msteps_per_mm[E_AXIS_N(target_extruder)] = value * PLANNER_STEPS_MULTIPLIER;
         }
-        planner.settings.axis_steps_per_mm[E_AXIS_N(target_extruder)] = value;
-      }
-      else {
-        planner.settings.axis_steps_per_mm[i] = parser.value_per_axis_units((AxisEnum)i);
+        else {
+          s.axis_steps_per_mm[i] = parser.value_per_axis_units((AxisEnum)i);
+          s.axis_msteps_per_mm[i] = parser.value_per_axis_units((AxisEnum)i) * PLANNER_STEPS_MULTIPLIER;
+        }
       }
     }
+
+    planner.apply_settings(s);
   }
   planner.refresh_positioning();
 
@@ -99,7 +134,7 @@ void GcodeSuite::M92() {
     if (parser.seen('H') || wanted) {
       const uint16_t argH = parser.ushortval('H'),
                      micro_steps = argH ?: Z_MICROSTEPS;
-      const float z_full_step_mm = micro_steps * planner.steps_to_mm[Z_AXIS];
+      const float z_full_step_mm = micro_steps * planner.mm_per_step[Z_AXIS];
       SERIAL_ECHO_START();
       SERIAL_ECHOPAIR("{ micro_steps:", micro_steps, ", z_full_step_mm:", z_full_step_mm);
       if (wanted) {
@@ -112,3 +147,5 @@ void GcodeSuite::M92() {
     }
   #endif
 }
+
+/** @}*/

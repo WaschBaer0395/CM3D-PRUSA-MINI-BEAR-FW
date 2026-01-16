@@ -35,15 +35,25 @@
   #include "../../../lcd/extensible_ui/ui_api.h"
 #endif
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M421: Set a single Mesh Bed Leveling Z coordinate
+ *### M421: Set a single Mesh Bed Leveling Z coordinate <a href="https://reprap.org/wiki/G-code#M421:_Set_a_Mesh_Bed_Leveling_Z_coordinate">M421: Set a Mesh Bed Leveling Z coordinate</a>
  *
- * Usage:
- *   M421 I<xindex> J<yindex> Z<linear>
- *   M421 I<xindex> J<yindex> Q<offset>
- *   M421 I<xindex> J<yindex> N
- *   M421 C Z<linear>
- *   M421 C Q<offset>
+ *#### Usage
+ *
+ *    M421 [ I | J | C | N | Z | Q ]
+ *
+ *#### Parameters
+ *
+ * - `I` - X index into the mesh array
+ * - `J` - Y index into the mesh array
+ * - `C` - Set the mesh point closest to the current nozzle position
+ * - `N` - Set the mesh point to undefined
+ * - `Z` - The new Z value to set
+ * - `Q` - A value to add to the existing Z value
  */
 void GcodeSuite::M421() {
   xy_int8_t ij = { int8_t(parser.intval('I', -1)), int8_t(parser.intval('J', -1)) };
@@ -68,5 +78,7 @@ void GcodeSuite::M421() {
     #endif
   }
 }
+
+/** @}*/
 
 #endif // AUTO_BED_LEVELING_UBL

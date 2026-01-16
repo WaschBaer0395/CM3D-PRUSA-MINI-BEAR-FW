@@ -1,83 +1,79 @@
 // screen_print_preview.hpp
 #pragma once
-#include "gui.hpp"
-#include "window_header.hpp"
-#include "window_roll_text.hpp"
-#include "ff.h"
-#include "screen.hpp"
+#include "screen_print_preview_base.hpp"
+#include "window_thumbnail.hpp"
+#include "gcode_info.hpp"
+#include "gcode_description.hpp"
+#include "fs_event_autolock.hpp"
+#include "static_alocation_ptr.hpp"
+#include <common/fsm_base_types.hpp>
+#include <guiconfig/guiconfig.h>
+#include <option/has_toolchanger.h>
+#include <option/has_mmu2.h>
+#include <find_error.hpp>
+#if HAS_TOOLCHANGER() || HAS_MMU2()
+    #include "screen_tools_mapping.hpp"
+#endif
 
-static const constexpr uint16_t PADDING = 10;
-static const constexpr uint16_t SCREEN_WIDTH = 240;  //FIXME should be in display.h
-static const constexpr uint16_t SCREEN_HEIGHT = 320; //FIXME should be in display.h
-static const constexpr uint16_t THUMBNAIL_HEIGHT = 124;
-static const constexpr uint16_t TITLE_HEIGHT = 24;
-static const constexpr uint16_t LINE_HEIGHT = 15;
-static const constexpr uint16_t LINE_SPACING = 5;
+// inherited from ScreenPrintPreviewBase just to handel different display sizes
+// do not use ScreenPrintPreviewBase
+class ScreenPrintPreview : public ScreenPrintPreviewBase {
+    // Apart from FIle error they all have the same warning
+    constexpr static const char *label_unfinished_selftest = find_error(ErrCode::CONNECT_UNFINISHED_SELFTEST).err_title;
+    constexpr static const char *label_fil_not_detected = find_error(ErrCode::CONNECT_PRINT_PREVIEW_NO_FILAMENT).err_title;
+#if HAS_MMU2()
+    constexpr static const char *label_fil_detected_mmu = find_error(ErrCode::CONNECT_PRINT_PREVIEW_MMU_FILAMENT_INSERTED).err_title;
+#endif
+    constexpr static const char *label_file_error = find_error(ErrCode::CONNECT_PRINT_PREVIEW_FILE_ERROR).err_title;
+    constexpr static const char *label_wrong_printer = find_error(ErrCode::CONNECT_PRINT_PREVIEW_WRONG_PRINTER).err_title;
+    constexpr static const char *label_wrong_filament = find_error(ErrCode::CONNECT_PRINT_PREVIEW_WRONG_FILAMENT).err_title;
 
-struct description_line_t {
-    window_text_t title;
-    window_text_t value;
-    char value_buffer[32];
-    description_line_t(window_frame_t *frame, bool has_thumbnail, size_t row,
-        string_view_utf8 title, const char *value_fmt, ...);
-    static size_t title_width(string_view_utf8 *title_str);
-    static size_t value_width(string_view_utf8 *title_str);
+    static constexpr const char *txt_unfinished_selftest = find_error(ErrCode::CONNECT_UNFINISHED_SELFTEST).err_text;
+    static constexpr const char *txt_fil_not_detected = find_error(ErrCode::CONNECT_PRINT_PREVIEW_NO_FILAMENT).err_text;
+#if HAS_MMU2()
+    static constexpr const char *txt_fil_detected_mmu = find_error(ErrCode::CONNECT_PRINT_PREVIEW_MMU_FILAMENT_INSERTED).err_text;
+#endif
 
-private:
-    static constexpr size_t calculate_y(bool has_thumbnail, size_t row) {
-        size_t y = TITLE_HEIGHT + 2 * PADDING;
-        if (has_thumbnail)
-            y += THUMBNAIL_HEIGHT + PADDING;
-        y += row * (LINE_HEIGHT + LINE_SPACING);
-        return y;
+    static constexpr const char *txt_new_fw_available = find_error(ErrCode::CONNECT_PRINT_PREVIEW_NEW_FW).err_text;
+    static constexpr const char *txt_wrong_fil_type = find_error(ErrCode::CONNECT_PRINT_PREVIEW_WRONG_FILAMENT).err_text;
+
+    static ScreenPrintPreview *ths; // to be accessible in dialog handler
+
+    GCodeInfo &gcode;
+    GCodeInfoWithDescription gcode_description; // cannot be first
+    WindowPreviewThumbnail thumbnail; // draws preview image
+
+    // Set to invalid value by default so that the Change() always triggers on the first call.
+    PhasesPrintPreview phase = static_cast<PhasesPrintPreview>(-1);
+
+    using UniquePtrBox = static_unique_ptr<MsgBoxIconned>;
+    UniquePtrBox pMsgbox;
+
+#if HAS_TOOLCHANGER() || HAS_MMU2()
+    using UniquePtrMapping = static_unique_ptr<ToolsMappingBody>;
+    UniquePtrMapping tools_mapping;
+
+    using MsgBoxMemSpace = std::array<uint8_t, 1616>;
+#else
+    using MsgBoxMemSpace = std::array<uint8_t, 968>;
+#endif
+    alignas(std::max_align_t) MsgBoxMemSpace msgBoxMemSpace;
+
+    template <typename T, typename... Args>
+    static_unique_ptr<T> make_msgbox(Args &&...args) {
+        static_assert(sizeof(T) <= std::tuple_size_v<MsgBoxMemSpace>);
+        return make_static_unique_ptr<T>(msgBoxMemSpace.data(), args...);
     }
-};
-
-struct GCodeInfo {
-    FIL file;
-    bool file_opened;
-    bool has_thumbnail;
-    char printing_time[16];
-    char filament_type[8];
-    unsigned filament_used_g;
-    unsigned filament_used_mm;
-    GCodeInfo();
-};
-
-struct GCodeInfoWithDescription : public GCodeInfo {
-    description_line_t description_lines[4];
-    GCodeInfoWithDescription(window_frame_t *frame);
-};
-
-//todo implement draw, i am using visible property on some description_lines
-struct screen_print_preview_data_t : public AddSuperWindow<screen_t> {
-    window_roll_text_t title_text;
-    window_icon_button_t print_button;
-    window_text_t print_label;
-    window_icon_button_t back_button;
-    window_text_t back_label;
-
-    GCodeInfoWithDescription gcode; //cannot be first
-
-    bool redraw_thumbnail;
-    bool suppress_draw;
 
 public:
-    screen_print_preview_data_t();
-    ~screen_print_preview_data_t();
+    ScreenPrintPreview();
+    void Change(fsm::BaseData data);
 
 protected:
-    virtual void windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) override;
-    //virtual void unconditionalDraw() override; //todo move draw from event
+    virtual void windowEvent(window_t *sender, GUI_event_t event, void *param) override;
 
 private:
-    bool gcode_file_exists();
-
-public:
-    //static methods
-    // FIXME: the screen_print_preview currently does not copy fpath and fname
-    // therefore, their lifetime must be at least as long as the screen's lifetime
-    static void SetGcodeFilepath(const char *fpath);
-    static const char *GetGcodeFilepath();
-    static void SetGcodeFilename(const char *fname);
+    void hide_main_dialog();
+    void show_main_dialog();
+    void show_tools_mapping();
 };

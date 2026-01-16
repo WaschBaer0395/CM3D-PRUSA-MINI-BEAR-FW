@@ -26,10 +26,21 @@
 
 #include "../gcode.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M113: Get or set Host Keepalive interval (0 to disable)
+ *### M113: Get or set Host Keepalive interval  <a href="https://reprap.org/wiki/G-code#M113:_Host_Keepalive">M113: Host Keepalive</a>
  *
- *   S<seconds> Optional. Set the keepalive interval.
+ *#### Usage
+ *
+ *    M113 [ S ]
+ *
+ *#### Parameters
+ *
+ * - `S<value>` - Set the keepalive interval in seconds
+ *   - `0` - disable
  */
 void GcodeSuite::M113() {
   if (parser.seenval('S')) {
@@ -41,5 +52,7 @@ void GcodeSuite::M113() {
     SERIAL_ECHOLNPAIR("M113 S", (unsigned long)host_keepalive_interval);
   }
 }
+
+/** @}*/
 
 #endif // HOST_KEEPALIVE_FEATURE

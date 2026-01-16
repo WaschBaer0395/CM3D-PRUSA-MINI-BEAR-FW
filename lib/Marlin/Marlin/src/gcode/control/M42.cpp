@@ -28,15 +28,23 @@
   #include "../../module/temperature.h"
 #endif
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M42: Change pin status via GCode
+ *### M42: Change pin status via GCode <a href="https://reprap.org/wiki/G-code#M42:_Switch_I.2FO_pin">M42: Switch I/O pin</a>
  *
- *  P<pin>  Pin number (LED if omitted)
- *          For LPC1768 specify pin P1_02 as M42 P102,
- *                                  P1_20 as M42 P120, etc.
+ *#### Usage
  *
- *  S<byte> Pin status from 0 - 255
- *  I       Flag to ignore Marlin's pin protection
+ *    M42 [ P | S | I ]
+ *
+ *#### Parameters
+ *
+ *  - `P` - Pin number
+ *  - `S` - Pin status (from 0 - 255)
+ *  - `I` - Flag to ignore pin protection
+ *
  */
 void GcodeSuite::M42() {
   if (!parser.seenval('S')) return;
@@ -67,3 +75,5 @@ void GcodeSuite::M42() {
     }
   #endif
 }
+
+/** @}*/

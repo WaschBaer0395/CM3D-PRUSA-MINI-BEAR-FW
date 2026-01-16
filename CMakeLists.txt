@@ -1,13 +1,22 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.22)
+include(ExternalProject)
 include(cmake/Utilities.cmake)
 include(cmake/GetGitRevisionDescription.cmake)
 include(cmake/ProjectVersion.cmake)
+include(cmake/Littlefs.cmake)
+include(cmake/Options.cmake)
 
 project(
   Buddy
   LANGUAGES C CXX ASM
   VERSION ${PROJECT_VERSION}
   )
+
+# Sets Python3_FIND_STRATEGY to "LOCATION"
+cmake_policy(SET CMP0094 NEW)
+
+# Enable initialization of subprojects without their submodules
+cmake_policy(SET CMP0097 NEW)
 
 if(NOT CMAKE_CROSSCOMPILING)
   #
@@ -16,85 +25,21 @@ if(NOT CMAKE_CROSSCOMPILING)
   add_subdirectory(utils)
 endif()
 
-#
-# Command Line Options
-#
-# You should specify those options when invoking CMake. Example:
-# ~~~
-# cmake .. <other options> -DPRINTER=MINI
-# ~~~
+include(ProjectOptions.cmake)
 
-set(PRINTER_VALID_OPTS "MINI")
-set(MOTHERBOARD_VALID_OPTS "1823")
-set(BOOTLOADER_VALID_OPTS "NO" "EMPTY" "YES")
-
-set(PRINTER
-    "MINI"
-    CACHE
-      STRING
-      "Select the printer for which you want to compile the project (valid values are ${PRINTER_VALID_OPTS})."
-    )
-set(BOOTLOADER
-    "NO"
-    CACHE STRING "Selects the bootloader mode (valid values are ${BOOTLOADER_VALID_OPTS})."
-    )
-set(MOTHERBOARD
-    "1823"
-    CACHE
-      STRING
-      "Select the motherboard for which you want to compile the project (valid values are ${MOTHERBOARD_VALID_OPTS})."
-    )
-set(GENERATE_BBF
-    "NO"
-    CACHE STRING "Whether a .bbf version should be generated."
-    )
-set(GENERATE_DFU
-    "NO"
-    CACHE BOOL "Whether a .dfu file should be generated. Implies GENERATE_BBF."
-    )
-set(SIGNING_KEY
-    ""
-    CACHE FILEPATH "Path to a PEM EC private key to be used to sign the firmware."
-    )
-set(PROJECT_VERSION_SUFFIX
-    "<auto>"
-    CACHE
-      STRING
-      "Full version suffix to be shown on the info screen in settings (e.g. full_version=4.0.3-BETA+1035.PR111.B4, suffix=-BETA+1035.PR111.B4). Defaults to '+<commit sha>.<dirty?>.<debug?>' if set to '<auto>'."
-    )
-set(PROJECT_VERSION_SUFFIX_SHORT
-    "<auto>"
-    CACHE
-      STRING
-      "Short version suffix to be shown on splash screen. Defaults to '+<BUILD_NUMBER>' if set to '<auto>'."
-    )
-set(BUILD_NUMBER
-    ""
-    CACHE STRING "Build number of the firmware. Resolved automatically if not specified."
-    )
-set(CUSTOM_COMPILE_OPTIONS
-    ""
-    CACHE STRING "Allows adding custom C/C++ flags"
-    )
-set(WUI
-    "YES"
-    CACHE BOOL "Enable Web User Interface"
-    )
-
-# Validate options
-foreach(OPTION "PRINTER" "MOTHERBOARD" "BOOTLOADER")
-  if(NOT ${OPTION} IN_LIST ${OPTION}_VALID_OPTS)
-    message(FATAL_ERROR "Invalid ${OPTION} ${${OPTION}}: Valid values are ${${OPTION}_VALID_OPTS}")
-  endif()
-endforeach()
-
-# in order to generate DFU file for bootloader, we need a BFU
-if(GENERATE_DFU AND BOOTLOADER)
-  set(GENERATE_BBF "YES")
+# link time optimizations to disable LTO run cmake with -DDISABLE_LTO
+if(NOT DEFINED DISABLE_LTO
+   AND NOT DEVELOPER_MODE
+   AND NOT BOARD STREQUAL DWARF
+   AND CMAKE_CROSSCOMPILING # This will not force LTO for unittests and png2font, because those are
+                            # build natively
+   )
+  set(COMPILE_WITH_LTO ON)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+else()
+  set(COMPILE_WITH_LTO OFF)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 endif()
-
-# Resolve BUILD_NUMBER and PROJECT_VERSION_* variables
-resolve_version_variables()
 
 # Check GCC Version
 get_recommended_gcc_version(RECOMMENDED_TOOLCHAIN_VERSION)
@@ -112,147 +57,174 @@ elseif(NOT CMAKE_CROSSCOMPILING AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     )
 endif()
 
-# Inform user about the resolved settings
-message(STATUS "Project version: ${PROJECT_VERSION}")
-message(STATUS "Project version with full suffix: ${PROJECT_VERSION_FULL}")
-message(
-  STATUS "Project version with short suffix: ${PROJECT_VERSION}${PROJECT_VERSION_SUFFIX_SHORT}"
-  )
-message(STATUS "Using toolchain file: ${CMAKE_TOOLCHAIN_FILE}.")
-message(STATUS "Bootloader: ${BOOTLOADER}")
-message(STATUS "Printer: ${PRINTER}")
-message(STATUS "Web User Interface: ${WUI}")
-
 # eclipse sets those variables, so lets just use them so we don't get a warning about unused
 # variables
 set(unused "${CMAKE_VERBOSE_MAKEFILE} ${CMAKE_RULE_MESSAGES}")
+set(CMAKE_CXX_STANDARD 23)
 
-# Set printer features
-set(PRINTERS_WITH_FILAMENT_SENSOR_YES "MINI")
-set(PRINTERS_WITH_GUI "MINI")
-set(PRINTERS_WITH_INIT_TRINAMIC_FROM_MARLIN_ONLY)
+# enable all warnings (well, not all, but some)
+add_compile_options(-Wall -Wsign-compare)
 
-# Set printer board
-set(PRINTERS_WITH_BUDDY "MINI")
+# make all paths stored inside firmware relative
+add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=.)
 
-if(${PRINTER} IN_LIST PRINTERS_WITH_FILAMENT_SENSOR_YES)
-  set(FILAMENT_SENSOR YES)
-else()
-  set(FILAMENT_SENSOR NO)
-endif()
+# make the builds reproducible
+add_compile_options(-frandom-seed=BuddyFW)
 
-if(${PRINTER} IN_LIST PRINTERS_WITH_BUDDY)
-  set(BOARD_TYPE BUDDY_BOARD)
-endif()
-
-if(${PRINTER} IN_LIST PRINTERS_WITH_GUI)
-  set(GUI YES)
-else()
-  set(GUI NO)
-endif()
-message(STATUS "GUI: ${GUI}")
-
-if(${PRINTER} IN_LIST PRINTERS_WITH_INIT_TRINAMIC_FROM_MARLIN_ONLY)
-  set(INIT_TRINAMIC_FROM_MARLIN_ONLY YES)
-else()
-  set(INIT_TRINAMIC_FROM_MARLIN_ONLY NO)
-endif()
-
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  set(DEBUG YES)
-else()
-  set(DEBUG NO)
-endif()
+add_compile_options(
+  $<$<COMPILE_LANGUAGE:CXX>:-Wno-register> $<$<COMPILE_LANGUAGE:CXX>:-Wno-volatile>
+  $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+  )
 
 # append custom C/C++ flags
 if(CUSTOM_COMPILE_OPTIONS)
-  string(REPLACE " " ";" CUSTOM_COMPILE_OPTIONS "${CUSTOM_COMPILE_OPTIONS}")
-  add_compile_options(${CUSTOM_COMPILE_OPTIONS})
+  string(REPLACE " " ";" EXTRA_COMPILE_OPTIONS "${CUSTOM_COMPILE_OPTIONS}")
+  add_compile_options(${EXTRA_COMPILE_OPTIONS})
+endif()
+
+# find bootloader.bin location
+if(BOOTLOADER STREQUAL "YES")
+  string(TOLOWER ${PRINTER} printer_low)
+  set(BOOTLOADER_VARIANT "${printer_low}")
 endif()
 
 #
-# A3idesHeaders
+# BuddyHeaders
 #
 # This library provides headers in the /include directory. When a library requires a configuration
 # header, e.g. STM32::USBHost requires usbh_conf.h, we can just place the header to /include and
-# then add A3idesHeaders as a dependency to STM32::USBHost.
+# then add BuddyHeaders as a dependency to STM32::USBHost.
 #
 # TODO: Refactor this to make it clear what header files are associated with which targets.
 #
 
-add_library(A3idesHeaders INTERFACE)
+add_library(BuddyHeaders INTERFACE)
 target_include_directories(
-  A3idesHeaders INTERFACE include include/stm32f4_hal include/usb_host include/usb_device
-                          include/marlin include/freertos
-  )
-target_link_libraries(A3idesHeaders INTERFACE STM32F4::HAL FreeRTOS::FreeRTOS)
-target_compile_definitions(
-  A3idesHeaders
-  INTERFACE
-  MOTHERBOARD=${MOTHERBOARD}
-  PRINTER_TYPE=PRINTER_PRUSA_${PRINTER}
-  BOARD_TYPE=${BOARD_TYPE}
-  MARLIN_DISABLE_INFINITE_LOOP
-  PROCESS_CUSTOM_GCODE
-  STM32GENERIC
-  STM32F4
-  _EXTUI
+  BuddyHeaders
+  INTERFACE include
+            include/usb_host
+            include/usb_device
+            include/marlin
+            src/hw
+            src/common
+            src/persistent_stores
+            src/persistent_stores/store_instances
+            src/guiconfig
+            src/lang
+            src/common/utils
+            ${OPTIONS_INCLUDE_DIR}
   )
 
-#
-# Configure Arduino Core
-#
-
-if(${PRINTER} STREQUAL "MINI")
-  set(ARDUINO_CORE_VARIANT "2209")
-  set(ARDUINO_CORE_TARGET "STM32F4xx")
+if(MCU MATCHES "STM32G0")
+  target_include_directories(
+    BuddyHeaders BEFORE INTERFACE include/stm32g0_hal include/device/stm32g0
+    )
+  target_link_libraries(BuddyHeaders INTERFACE STM32G0::HAL STM32G0xx::CMSIS)
+elseif(MCU MATCHES "STM32F4")
+  target_include_directories(
+    BuddyHeaders BEFORE INTERFACE include/stm32f4_hal include/device/stm32f4
+    )
+  target_link_libraries(BuddyHeaders INTERFACE STM32F4::HAL STM32F4xx::CMSIS)
+elseif(MCU MATCHES "STM32H5")
+  target_include_directories(
+    BuddyHeaders BEFORE INTERFACE include/stm32h5_hal include/device/stm32h5
+    )
+  target_link_libraries(BuddyHeaders INTERFACE STM32H5::HAL STM32H5xx::CMSIS)
 else()
-  message(FATAL_ERROR "Don't know how to configure arduino core with this settings.")
+  message(FATAL_ERROR "Undefined HAL for ${MCU}")
+endif()
+
+target_include_directories(BuddyHeaders INTERFACE include)
+
+target_link_libraries(BuddyHeaders INTERFACE FreeRTOS::FreeRTOS FreeRTOS::CMSIS)
+
+# Define printer type and version
+set(PRINTER_VERSION "1") # default version
+set(PRINTER_SUBVERSION "0") # default subversion
+
+# The PRINTER_TYPE is (besides being used in the code) being stored in the .bbf and checked by the
+# bootloader (which contains the same "enum" as below). Preferably do not use it on an interface
+# though, there should be a better number to use there, e.g. the PRINTER_CODE (USB PID)
+if(PRINTER STREQUAL "MK4")
+  set(PRINTER_TYPE "1")
+  set(PRINTER_VERSION "4")
+  set(PRINTER_CODE "13")
+elseif(PRINTER STREQUAL "MK3.5")
+  set(PRINTER_TYPE "1")
+  set(PRINTER_VERSION "3")
+  set(PRINTER_SUBVERSION "5")
+  set(PRINTER_CODE "23")
+elseif(PRINTER STREQUAL "MINI")
+  set(PRINTER_TYPE "2")
+  set(PRINTER_CODE "12")
+elseif(PRINTER STREQUAL "XL")
+  set(PRINTER_TYPE "3")
+  set(PRINTER_CODE "17")
+elseif(PRINTER STREQUAL "iX")
+  set(PRINTER_TYPE "4")
+  set(PRINTER_CODE "16")
+elseif(PRINTER STREQUAL "XL_DEV_KIT")
+  set(PRINTER_TYPE "5")
+  set(PRINTER_CODE "18")
+elseif(PRINTER STREQUAL "COREONE")
+  set(PRINTER_TYPE "7")
+  set(PRINTER_CODE "31")
+else()
+  message(FATAL_ERROR "Unknown printer \"${PRINTER}\".")
+endif()
+
+add_library(printers INTERFACE)
+target_include_directories(printers INTERFACE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(
+  printers INTERFACE PRINTER_TYPE=${PRINTER_TYPE} PRINTER_VERSION=${PRINTER_VERSION}
+                     PRINTER_SUBVERSION=${PRINTER_SUBVERSION}
+  )
+
+target_compile_definitions(
+  BuddyHeaders INTERFACE PRINTER_CODE=${PRINTER_CODE} BOARD=BOARD_${BOARD} PROCESS_CUSTOM_GCODE
+  )
+target_link_libraries(BuddyHeaders INTERFACE printers)
+
+if(MCU MATCHES "STM32F4")
+  target_compile_definitions(BuddyHeaders INTERFACE STM32GENERIC STM32F4 STM32F4xx)
+elseif(MCU MATCHES "STM32G0")
+  target_compile_definitions(BuddyHeaders INTERFACE STM32GENERIC STM32G0 STM32G0xx)
+elseif(MCU MATCHES "STM32H5")
+  target_compile_definitions(BuddyHeaders INTERFACE STM32GENERIC STM32H5 STM32H5xx)
+else()
+  message(FATAL_ERROR "Undefined macros for ${MCU}")
 endif()
 
 #
 # Configure STMicroelectronics Libraries
 #
 
-# STM32F4::HAL
-if(${PRINTER} STREQUAL "MINI")
-  set(STM32F4_HAL_TARGET "STM32F407xx")
-else()
-  message(FATAL_ERROR "Don't know how to configure STM32F4::HAL for printer ${PRINTER}")
-endif()
-add_library(STM32F4_HAL_Config INTERFACE)
-target_include_directories(STM32F4_HAL_Config INTERFACE include/stm32f4_hal)
-
 # STM32::USBHost
-add_library(STM32_USBHost_Config ALIAS A3idesHeaders)
-
-# STM32::USBDevice
-add_library(STM32_USBDevice_Config ALIAS A3idesHeaders)
+add_library(STM32_USBHost_Config ALIAS BuddyHeaders)
 
 # STM32::Utilities::CPU
-add_library(STM32_Utilities_CPU_Config ALIAS A3idesHeaders)
+add_library(STM32_Utilities_CPU_Config ALIAS BuddyHeaders)
 
 #
-# Configure FreeRTOS
+# Configure SEGGER
 #
-
-add_library(FreeRTOS_Config INTERFACE)
-target_include_directories(FreeRTOS_Config INTERFACE include/freertos)
-target_link_libraries(FreeRTOS_Config INTERFACE STM32::CPU)
+add_library(Segger_Config INTERFACE)
+target_include_directories(Segger_Config INTERFACE include/segger src/segger)
+target_link_libraries(Segger_Config INTERFACE BuddyHeaders)
 
 #
 # Configure LwIP
 #
 
 add_library(LwIP_Config INTERFACE)
-target_link_libraries(LwIP_Config INTERFACE A3idesHeaders)
+target_link_libraries(LwIP_Config INTERFACE BuddyHeaders log_interface)
 
 #
 # Configure FatFs
 #
 
 add_library(FatFs_Config INTERFACE)
-target_link_libraries(FatFs_Config INTERFACE A3idesHeaders STM32::USBHost)
+target_link_libraries(FatFs_Config INTERFACE BuddyHeaders logging STM32::USBHost)
 
 #
 # Configure Marlin
@@ -261,54 +233,86 @@ target_link_libraries(FatFs_Config INTERFACE A3idesHeaders STM32::USBHost)
 add_library(Marlin_Config INTERFACE)
 # TODO: fix dependency on src/common and src/gui
 target_include_directories(
-  Marlin_Config INTERFACE include/marlin src/common src/common/selftest src/gui
-                          src/marlin_stubs/include
+  Marlin_Config INTERFACE include/marlin src/common src/gui src/marlin_stubs/include
   )
-target_link_libraries(Marlin_Config INTERFACE A3idesHeaders FreeRTOS::FreeRTOS)
+target_include_directories(Marlin_Config INTERFACE src/common/selftest)
+target_link_libraries(Marlin_Config INTERFACE BuddyHeaders FreeRTOS::FreeRTOS)
+
+#
+# Configure tinyusb
+#
+add_library(tinyusb_dependencies INTERFACE)
+target_include_directories(tinyusb_dependencies INTERFACE include/tinyusb)
+target_link_libraries(tinyusb_dependencies INTERFACE FreeRTOS::FreeRTOS)
 
 #
 # Global Compiler & Linker Configuration
 #
 
-# Thread safe newlib
-add_compile_options(-DconfigUSE_NEWLIB_REENTRANT=1)
-
 # include symbols
 add_compile_options(-g)
 
 # optimizations
-if(DEBUG)
-  add_compile_options(-Og)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  if(MCU MATCHES "STM32F40"
+     OR MCU MATCHES "STM32G0"
+     OR MCU MATCHES "STM32H5"
+     OR PRINTER STREQUAL "MK4"
+     OR PRINTER STREQUAL "MK3.5"
+     OR PRINTER STREQUAL "XL"
+     OR PRINTER STREQUAL "iX"
+     OR PRINTER STREQUAL "COREONE"
+     )
+    add_compile_options(-Og -ggdb3)
+  else()
+    # O0 should be compiled with -fomit-frame-pointer to make sure there is enough registers for asm
+    # functions
+    add_compile_options(-O0 -fomit-frame-pointer)
+  endif()
 else()
   add_compile_options(-Os)
 endif()
 
 if(CMAKE_CROSSCOMPILING)
   # mcu related settings
-  set(MCU_FLAGS -mthumb -mcpu=cortex-m4 -mfloat-abi=hard -mfpu=fpv4-sp-d16)
+  set(MCU_FLAGS -mthumb)
+  if(MCU MATCHES "STM32F4")
+    list(APPEND MCU_FLAGS -mcpu=cortex-m4 -mfloat-abi=hard -mfpu=fpv4-sp-d16)
+  elseif(MCU MATCHES "STM32G0")
+    list(APPEND MCU_FLAGS -mcpu=cortex-m0plus -mfloat-abi=soft)
+  elseif(MCU MATCHES "STM32H5")
+    list(APPEND MCU_FLAGS -mcpu=cortex-m33 -mfloat-abi=hard -mfpu=fpv5-sp-d16)
+  else()
+    message(FATAL_ERROR "Unknown MCU_FLAGS for ${MCU}")
+  endif()
   add_compile_options(${MCU_FLAGS})
   add_link_options(${MCU_FLAGS})
 
   # better FreeRTOS support
-  add_link_options(-Wl,--undefined=uxTopUsedPriority,--undefined=init_task)
-
-  # split and gc sections
-  add_compile_options(-ffunction-sections -fdata-sections)
-  add_link_options(-Wl,--gc-sections)
+  add_link_options(-Wl,--undefined=init_task)
 
   # disable exceptions and related metadata
   add_compile_options(-fno-exceptions -fno-unwind-tables)
   add_link_options(-Wl,--defsym,__exidx_start=0,--defsym,__exidx_end=0)
 
+  # wrap _dtoa to ensure formatting of floats isn't being called from ISR
+  add_link_options(-Wl,--wrap=_dtoa_r)
+
   # use custom printf implementation instead of the one in newlib (see lib/printf)
   add_link_options(
     -Wl,--defsym=printf=printf_,--defsym=sprintf=sprintf_,--defsym=snprintf=snprintf_,--defsym=vprintf=vprintf_,--defsym=vsnprintf=vsnprintf_
     )
+
+  # wrap _dtoa to ensure formatting of floats isn't being called from ISR
+  add_link_options(-Wl,--wrap=_dtoa_r)
+
+  # disable warnings about RWX sections due to CrashCatcher's "safe" page
+  add_link_options(-Wl,--no-warn-rwx-segments)
 endif()
 
-# enable all warnings (well, not all, but some)
-add_compile_options(-Wall -Wsign-compare)
-add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-register> $<$<COMPILE_LANGUAGE:CXX>:-std=c++1z>)
+# split and gc sections
+add_compile_options(-ffunction-sections -fdata-sections)
+add_link_options(-Wl,--gc-sections)
 
 # support _DEBUG macro (some code uses to recognize debug builds)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -324,16 +328,6 @@ endif()
 #
 # add_compile_options(-mno-unaligned-access)
 
-if(CMAKE_CROSSCOMPILING)
-  # configure linker script
-  if(BOOTLOADER)
-    set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/src/STM32F407VG_FLASH_boot.ld")
-  else(NOT BOOTLOADER)
-    set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/src/STM32F407VG_FLASH.ld")
-  endif()
-  add_link_options("-Wl,-T,${LINKER_SCRIPT}")
-endif()
-
 #
 # Import definitions of all libraries
 #
@@ -341,40 +335,168 @@ endif()
 add_subdirectory(lib)
 
 #
-# A3ides firmware
+# Build Puppy Firmwares
+#
+
+if(BOARD IN_LIST BUDDY_BOARDS AND HAS_PUPPIES_BOOTLOADER)
+  string(TOLOWER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_lower)
+  string(TOLOWER "${PRINTER}" PRINTER_lower)
+
+  if(NOT DWARF_BINARY_PATH AND HAS_DWARF)
+    get_filename_component(
+      DWARF_BINARY_DIR "${DWARF_BINARY_DIR}" REALPATH BASE_DIR "${CMAKE_SOURCE_DIR}"
+      )
+    get_filename_component(DWARF_BINARY_PATH "firmware.bin" REALPATH BASE_DIR "${DWARF_BINARY_DIR}")
+    ExternalProject_Add(
+      dwarf
+      SOURCE_DIR "${DWARF_SOURCE_DIR}"
+      BINARY_DIR "${DWARF_BINARY_DIR}"
+      CMAKE_ARGS
+        --preset xl-dwarf_${CMAKE_BUILD_TYPE_lower}_boot -B "${DWARF_BINARY_DIR}"
+        $<$<BOOL:${CUSTOM_COMPILE_OPTIONS}>:-DCUSTOM_COMPILE_OPTIONS=${CUSTOM_COMPILE_OPTIONS}>
+      INSTALL_COMMAND ${CMAKE_COMMAND} -E echo "Skipping install step"
+      BUILD_BYPRODUCTS "${DWARF_BINARY_PATH}" "${DWARF_BINARY_DIR}/firmware"
+      STEP_TARGETS build
+      USES_TERMINAL_BUILD TRUE
+      USES_TERMINAL_INSTALL FALSE
+      BUILD_ALWAYS TRUE
+      )
+  endif()
+
+  if(NOT MODULARBED_BINARY_PATH AND HAS_PUPPY_MODULARBED)
+    get_filename_component(
+      MODULARBED_BINARY_DIR "${MODULARBED_BINARY_DIR}" REALPATH BASE_DIR "${CMAKE_SOURCE_DIR}"
+      )
+    get_filename_component(
+      MODULARBED_BINARY_PATH "firmware.bin" REALPATH BASE_DIR "${MODULARBED_BINARY_DIR}"
+      )
+    ExternalProject_Add(
+      modularbed
+      SOURCE_DIR "${MODULARBED_SOURCE_DIR}"
+      BINARY_DIR "${MODULARBED_BINARY_DIR}"
+      CMAKE_ARGS
+        --preset ${PRINTER_lower}-modularbed_${CMAKE_BUILD_TYPE_lower}_boot -B
+        "${MODULARBED_BINARY_DIR}"
+        $<$<BOOL:${CUSTOM_COMPILE_OPTIONS}>:-DCUSTOM_COMPILE_OPTIONS=${CUSTOM_COMPILE_OPTIONS}>
+      INSTALL_COMMAND ${CMAKE_COMMAND} -E echo "Skipping install step"
+      BUILD_BYPRODUCTS "${MODULARBED_BINARY_PATH}" "${MODULARBED_BINARY_DIR}/firmware"
+      STEP_TARGETS build
+      USES_TERMINAL_BUILD TRUE
+      USES_TERMINAL_INSTALL FALSE
+      BUILD_ALWAYS TRUE
+      )
+  endif()
+
+  if(NOT XBUDDY_EXTENSION_BINARY_PATH AND HAS_XBUDDY_EXTENSION)
+    get_filename_component(
+      XBUDDY_EXTENSION_BINARY_DIR "${XBUDDY_EXTENSION_BINARY_DIR}" REALPATH BASE_DIR
+      "${CMAKE_SOURCE_DIR}"
+      )
+    get_filename_component(
+      XBUDDY_EXTENSION_BINARY_PATH "firmware.bin" REALPATH BASE_DIR
+      "${XBUDDY_EXTENSION_BINARY_DIR}"
+      )
+    ExternalProject_Add(
+      xbuddy_extension
+      SOURCE_DIR "${XBUDDY_EXTENSION_SOURCE_DIR}"
+      BINARY_DIR "${XBUDDY_EXTENSION_BINARY_DIR}"
+      CMAKE_ARGS
+        --preset ${PRINTER_lower}-xbuddy-extension_${CMAKE_BUILD_TYPE_lower}_boot -B
+        "${XBUDDY_EXTENSION_BINARY_DIR}"
+        $<$<BOOL:${CUSTOM_COMPILE_OPTIONS}>:-DCUSTOM_COMPILE_OPTIONS=${CUSTOM_COMPILE_OPTIONS}>
+      INSTALL_COMMAND ${CMAKE_COMMAND} -E echo "Skipping install step"
+      BUILD_BYPRODUCTS "${XBUDDY_EXTENSION_BINARY_PATH}" "${XBUDDY_EXTENSION_BINARY_DIR}/firmware"
+      STEP_TARGETS build
+      USES_TERMINAL_BUILD TRUE
+      USES_TERMINAL_INSTALL FALSE
+      BUILD_ALWAYS TRUE
+      )
+  endif()
+endif()
+
+# Unittests
+if(NOT CMAKE_CROSSCOMPILING)
+  option(UNITTESTS_ENABLE "Enable building of unittest" ON)
+  if(UNITTESTS_ENABLE)
+    enable_testing()
+    add_subdirectory(tests)
+  endif()
+endif()
+
+# std::rand/random
+if(BOARD IN_LIST BUDDY_BOARDS)
+  set(ENABLE_HW_STD_RAND TRUE)
+  set(RANDOM_CPP random_hw.cpp)
+else()
+  set(ENABLE_HW_STD_RAND FALSE)
+  set(RANDOM_CPP random_sw.cpp)
+endif()
+
+#
+# Buddy firmware
 #
 
 add_executable(firmware)
+add_subdirectory(src)
 
-add_subdirectory(src/lang)
+target_compile_options(
+  firmware
+  PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+          $<$<COMPILE_LANGUAGE:CXX>:-Wno-expansion-to-defined>
+          $<$<COMPILE_LANGUAGE:CXX>:-Wno-format-zero-length>
+          $<$<COMPILE_LANGUAGE:CXX>:-Wno-non-virtual-dtor>
+          $<$<COMPILE_LANGUAGE:CXX>:-Werror=delete-non-virtual-dtor>
+          $<$<COMPILE_LANGUAGE:CXX>:-Wduplicated-cond>
+          $<$<COMPILE_LANGUAGE:CXX>:-Wlogical-op>
+          $<$<COMPILE_LANGUAGE:CXX>:-Wnull-dereference>
+          $<$<COMPILE_LANGUAGE:CXX>:-Wshadow=compatible-local>
+          $<$<COMPILE_LANGUAGE:CXX>:-Wvla>
+          $<$<COMPILE_LANGUAGE:CXX>:-Wno-psabi>
+          -Wdouble-promotion
+  )
 
-set_target_properties(firmware PROPERTIES CXX_STANDARD 17)
+if(ENABLE_HW_STD_RAND)
+  # Wrap rand and replace the implementation with one using HW RNG
+  target_link_options(firmware PUBLIC -Wl,--wrap=rand)
 
-if(WUI)
-  target_compile_definitions(firmware PRIVATE BUDDY_ENABLE_WUI)
+  # Wrap srand, do not implement the wrapper -> throws error when referenced in the code. rand()
+  # uses HW RNG now, so it cannot be seeded
+  target_link_options(firmware PUBLIC -Wl,--wrap=srand)
+endif()
+
+# Appending fw descriptor (with calculated fingerprint) to the ELF
+if(BOARD STREQUAL "DWARF"
+   OR BOARD STREQUAL "MODULARBED"
+   OR BOARD STREQUAL "XBUDDY_EXTENSION"
+   )
+  add_custom_command(
+    TARGET firmware
+    POST_BUILD
+    # Generate a binary without fingerprint
+    COMMAND "${CMAKE_OBJCOPY}" -O binary -S "$<TARGET_FILE:firmware>" "firmware_no_descriptor.bin"
+    # Create the fw descriptor with calculated fingerprint of binary
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/utils/gen_puppies_descriptor.py"
+            "firmware_no_descriptor.bin" "fw_descriptor.bin"
+    # Set the firmware's fw descriptor in the firmware's ELF file
+    COMMAND "${CMAKE_OBJCOPY}" "--update-section" ".fw_descriptor=fw_descriptor.bin"
+            "$<TARGET_FILE:firmware>" "$<TARGET_FILE:firmware>"
+    VERBATIM
+    )
 endif()
 
 # generate firmware.bin file
 objcopy(firmware "binary" ".bin")
 
 # generate linker map file
-target_link_options(firmware PUBLIC -Wl,-Map=firmware.map)
+target_link_options(firmware PUBLIC -Wl,-Map=firmware.map,--print-memory-usage)
 
 # inform about the firmware's size in terminal
 report_size(firmware)
 
-add_link_dependency(firmware "${LINKER_SCRIPT}")
-
-# generate .bbf version if requested
+# generate bbf if needed
 if(GENERATE_BBF)
   message(STATUS "Configured to generate .bbf version of the firmware.")
   message(STATUS "Signing Key: ${SIGNING_KEY}")
-
-  if(PRINTER STREQUAL "MINI")
-    set(PRINTER_TYPE "2")
-  else()
-    message(FATAL_ERROR "Don't know how to encode printer type for ${PRINTER}.")
-  endif()
 
   if(PROJECT_VERSION_SUFFIX)
     if(NOT "${PROJECT_VERSION_SUFFIX}" MATCHES "\\+${BUILD_NUMBER}")
@@ -385,9 +507,39 @@ if(GENERATE_BBF)
     endif()
   endif()
 
+  set(resource_images)
+  set(resource_image_names)
+
+  if(RESOURCES)
+    list(APPEND resource_images resources-image)
+    list(APPEND resource_image_names "RESOURCES_IMAGE")
+  endif()
+
+  if(BOOTLOADER_UPDATE)
+    list(APPEND resource_images resources-bootloader-image)
+    list(APPEND resource_image_names "RESOURCES_BOOTLOADER_IMAGE")
+  endif()
+
   pack_firmware(
-    firmware "${PROJECT_VERSION_FULL}" "${BUILD_NUMBER}" "${PRINTER_TYPE}" "${SIGNING_KEY}"
+    firmware
+    FW_VERSION
+    "${PROJECT_VERSION}${PROJECT_VERSION_SUFFIX_SHORT}"
+    BUILD_NUMBER
+    "${BUILD_NUMBER}"
+    PRINTER_TYPE
+    "${PRINTER_TYPE}"
+    PRINTER_VERSION
+    "${PRINTER_VERSION}"
+    PRINTER_SUBVERSION
+    "${PRINTER_SUBVERSION}"
+    SIGNING_KEY
+    "${SIGNING_KEY}"
+    RESOURCE_IMAGES
+    ${resource_images}
+    RESOURCE_IMAGE_NAMES
+    ${resource_image_names}
     )
+
 elseif(SIGNING_KEY)
   message(WARNING "SIGNING_KEY specified but BBF generation is not enabled.")
 endif()
@@ -397,8 +549,7 @@ if(GENERATE_DFU)
   if(BOOTLOADER)
     set(firmware_addr "0x08020000")
     if(BOOTLOADER STREQUAL "YES")
-      string(TOLOWER ${PRINTER} printer_low)
-      get_dependency_directory("bootloader-${printer_low}" bootloader_dir)
+      get_dependency_directory("bootloader-${BOOTLOADER_VARIANT}" bootloader_dir)
       set(bootloader_input "0x08000000:${bootloader_dir}/bootloader.bin")
     endif()
     set(firmware_input "0x08020000:${CMAKE_BINARY_DIR}/firmware.bbf")
@@ -417,309 +568,78 @@ if(GENERATE_DFU)
     )
 endif()
 
-target_include_directories(
-  firmware
-  PRIVATE include
-          src/common
-          src/common/include
-          src/gui
-          src/gui/dialogs
-          src/gui/wizard
-          src/guiapi/include
-          src/lang
-          src/hw
-  )
-
-target_compile_options(firmware PRIVATE -Wdouble-promotion)
-
-target_link_libraries(
-  firmware
-  PRIVATE A3idesHeaders
-          Marlin
-          Arduino::Core
-          Arduino::TMCStepper
-          Arduino::LiquidCrystal
-          LwIP
-          FatFs
-          lpng
-          STM32::USBHost
-          STM32::USBDevice
-          CPU
-          inih::inih
-          $<$<BOOL:${WUI}>:WUI>
-          jsmn::jsmn
-          QR
-          Buddy::Lang
-          printf::printf
-  )
-
-target_sources(
-  firmware
-  PRIVATE $<$<IN_LIST:${BOOTLOADER},YES;EMPTY>:src/startup/startup_stm32f407xx_boot.s>
-          $<$<STREQUAL:${BOOTLOADER},NO>:src/startup/startup_stm32f407xx.s>
-          src/usbd_cdc_if.c
-          src/usb_device.c
-          src/freertos.c
-          src/freertos_openocd.c
-          src/usbh_diskio.c
-          src/main.cpp
-          src/usbd_desc.c
-          $<$<IN_LIST:${BOOTLOADER},YES;EMPTY>:src/system_stm32f4xx_boot.c>
-          $<$<STREQUAL:${BOOTLOADER},NO>:src/system_stm32f4xx.c>
-          src/stm32f4xx_hal_msp.c
-          src/stm32f4xx_it.c
-          src/fatfs.c
-          src/usb_host.c
-          src/usbh_conf.c
-          src/usbd_conf.c
-          src/stm32f4xx_hal_timebase_tim.c
-          src/common/non_file_printing_counter.cpp
-          $<$<STREQUAL:${FILAMENT_SENSOR},YES>:src/common/filament_sensor.cpp>
-          $<$<BOOL:${FILAMENT_SENSOR}>:src/common/thread_measurement.cpp>
-          src/common/hardware_serial.cpp
-          src/common/diag.cpp
-          src/common/eeprom.cpp
-          src/common/eeprom_loadsave.c
-          src/common/marlin_vars.c
-          src/common/media.cpp
-          src/common/Pin.cpp
-          src/common/PinsCheck.cpp
-          src/common/sim_bed.c
-          src/common/sys.cpp
-          src/common/sim_nozzle.c
-          src/common/heap.c
-          src/common/hwio_a3ides_2209_02.cpp
-          src/common/putslave.cpp
-          src/common/safe_state.cpp
-          src/common/variant8.cpp
-          src/common/dbg.c
-          src/common/wdt.cpp
-          src/common/dump.c
-          src/common/marlin_client.c
-          src/common/bsod.cpp
-          src/common/adc.c
-          src/common/uartslave.c
-          src/common/version.c
-          src/common/marlin_events.c
-          src/common/marlin_errors.c
-          src/common/metric.c
-          src/common/metric_handlers.c
-          src/common/uartrxbuff.c
-          src/common/appmain.cpp
-          src/common/app_metrics.cpp
-          src/common/sim_heater.cpp
-          src/common/marlin_server.cpp
-          src/common/odometer.cpp
-          src/common/selftest/selftest_MINI.cpp
-          src/common/selftest/selftest_fan.cpp
-          src/common/selftest/selftest_axis.cpp
-          src/common/selftest/selftest_heater.cpp
-          src/common/sim_motion.cpp
-          src/common/st25dv64k.c
-          src/common/w25x.c
-          src/common/gcode_file.cpp
-          src/common/gcode_filter.cpp
-          src/common/gcode_thumb_decoder.cpp
-          src/common/print_utils.cpp
-          src/common/base64_stream_decoder.cpp
-          src/common/sound.cpp
-          src/common/language_eeprom.cpp
-          src/common/support_utils_lib.cpp
-          src/common/support_utils.cpp
-          src/common/str_utils.cpp
-          src/common/errors.cpp
-          src/common/client_response.cpp
-          src/common/crc32.c
-          src/common/crc32_zlib.c
-          src/common/ini_handler.c
-          src/common/sha256.c
-          src/common/wui_api.c
-          src/common/z_calibration_fsm.cpp
-          src/common/scratch_buffer.cpp
-          src/common/footer_eeprom.cpp
-          $<$<STREQUAL:${PRINTER},MINI>:src/common/minda_broken_cable_detection.cpp>
-          $<$<STREQUAL:${PRINTER},MINI>:src/common/MindaRedscreen.cpp>
-          src/marlin_stubs/M330.cpp
-          src/marlin_stubs/M50.cpp
-          src/hw/buffered_serial.cpp
-          src/marlin_stubs/M876.cpp
-          src/marlin_stubs/G26.cpp
-          src/marlin_stubs/G162.cpp
-          src/marlin_stubs/gcode.cpp
-          src/marlin_stubs/pause/G27.cpp
-          src/marlin_stubs/pause/M125.cpp
-          src/marlin_stubs/pause/M600.cpp
-          src/marlin_stubs/pause/M601_M602.cpp
-          src/marlin_stubs/pause/M603.cpp
-          src/marlin_stubs/pause/M701_M702.cpp
-          src/marlin_stubs/pause/pause.cpp
-          src/marlin_stubs/feature/safety_timer.cpp
-          src/marlin_stubs/sdcard/M20-M30_M32-M34.cpp
-          src/marlin_stubs/host/M115.cpp
-          src/gui/guimain.cpp
-          src/common/filament.cpp
-          src/common/fanctl.cpp
-          src/common/trinamic.cpp
-  )
-
-if(GUI)
-  target_sources(
+if(BOARD IN_LIST BUDDY_BOARDS)
+  target_link_libraries(
     firmware
-    PRIVATE src/gui/screen_menu_filament.cpp
-            src/gui/dialogs/dialog_response.cpp
-            src/gui/dialogs/IDialog.cpp
-            src/gui/dialogs/DialogFactory.cpp
-            src/gui/dialogs/DialogHandler.cpp
-            src/gui/dialogs/DialogStateful.cpp
-            src/gui/dialogs/DialogRadioButton.cpp
-            src/gui/dialogs/DialogLoadUnload.cpp
-            src/gui/dialogs/DialogG162.cpp
-            src/gui/dialogs/DialogSelftestAxis.cpp
-            src/gui/dialogs/DialogSelftestFans.cpp
-            src/gui/dialogs/DialogSelftestTemp.cpp
-            src/gui/dialogs/DialogSelftestResult.cpp
-            src/gui/dialogs/window_dlg_load_unload.cpp
-            src/gui/dialogs/window_dlg_wait.cpp
-            src/gui/dialogs/window_dlg_popup.cpp
-            src/gui/dialogs/window_dlg_strong_warning.cpp
-            src/gui/dialogs/window_dlg_preheat.cpp
-            src/gui/dialogs/liveadjust_z.cpp
-            src/gui/ScreenFactory.cpp
-            src/gui/ScreenHandler.cpp
-            src/gui/gui_media_events.cpp
-            src/gui/dialogs/window_dlg_calib_z.cpp
-            src/gui/screen_menu_temperature.cpp
-            src/gui/resource.c
-            src/gui/window_print_progress.cpp
-            src/gui/window_file_list.cpp
-            src/gui/window_temp_graph.cpp
-            src/gui/screen_menu_settings.cpp
-            src/gui/window_header.cpp
-            src/gui/screen_sysinf.cpp
-            src/gui/screen_menu_version_info.cpp
-            src/gui/test_display.cpp
-            src/gui/screen_splash.cpp
-            src/gui/screen_menu_odometer.cpp
-            src/gui/screen_menu_service.cpp
-            src/gui/screen_menu_calibration.cpp
-            src/gui/screen_menu.cpp
-            src/gui/screen_print_preview.cpp
-            src/gui/screen_messages.cpp
-            src/gui/screen_menu_info.cpp
-            src/gui/screen_watchdog.cpp
-            src/gui/screen_reset_error.cpp
-            src/gui/screen_hardfault.cpp
-            src/gui/screen_temperror.cpp
-            src/gui/screen_menu_move.cpp
-            src/gui/screen_menu_lan_settings.cpp
-            src/gui/screen_menu_languages.cpp
-            src/gui/screen_menu_sensor_info.cpp
-            src/gui/screen_qr_error.cpp
-            src/gui/screen_menu_hw_setup.cpp
-            src/gui/screen_menu_steel_sheets.cpp
-            src/gui/screen_sheet_rename.cpp
-            src/gui/test/screen_test.cpp
-            src/gui/test/screen_test_disp_mem.cpp
-            src/gui/test/screen_test_gui.cpp
-            src/gui/test/screen_test_term.cpp
-            src/gui/test/screen_test_msgbox.cpp
-            src/gui/test/screen_test_dlg.cpp
-            src/gui/test/screen_test_wizard_icons.cpp
-            src/gui/test/screen_test_graph.cpp
-            src/gui/wizard/selftest.cpp
-            src/gui/wizard/firstlay.cpp
-            src/gui/wizard/screen_wizard.cpp
-            src/gui/wizard/xyzcalib.cpp
-            src/gui/screen_home.cpp
-            src/gui/screen_filebrowser.cpp
-            src/gui/screen_menu_preheat.cpp
-            src/gui/status_footer.cpp
-            src/gui/menu_vars.cpp
-            src/gui/IScreenPrinting.cpp
-            src/gui/ScreenFirstLayer.cpp
-            src/gui/ScreenPrintingModel.cpp
-            src/gui/screen_printing.cpp
-            src/gui/screen_printing_serial.cpp
-            src/gui/screen_menu_tune.cpp
-            src/gui/screen_menu_fw_update.cpp
-            src/gui/test/screen_menu_test_temperature.cpp
-            src/gui/test/screen_mesh_bed_lv.cpp
-            src/gui/screen_menu_eeprom.cpp
-            src/guiapi/src/gui.cpp
-            src/guiapi/src/term.cpp
-            src/guiapi/src/guitypes.cpp
-            src/guiapi/src/Rect16.cpp
-            src/guiapi/src/window_progress.cpp
-            src/guiapi/src/window_frame.cpp
-            src/guiapi/src/screen.cpp
-            src/guiapi/src/gui_timer.cpp
-            src/guiapi/src/display_helper.cpp
-            src/guiapi/src/text_roll.cpp
-            src/guiapi/src/window_menu.cpp
-            src/guiapi/src/window_term.cpp
-            src/guiapi/src/window_arrows.cpp
-            src/guiapi/src/window_numb.cpp
-            src/guiapi/src/st7789v.c
-            src/guiapi/src/st7789v.cpp
-            src/guiapi/src/display_ex.cpp
-            src/guiapi/src/window_icon.cpp
-            src/guiapi/src/window_text.cpp
-            src/guiapi/src/window_roll_text.cpp
-            src/guiapi/src/window_msgbox.cpp
-            src/guiapi/src/window_qr.cpp
-            src/guiapi/src/window.cpp
-            src/guiapi/src/window_event.cpp
-            src/guiapi/src/IWindowMenuItem.cpp
-            src/guiapi/src/WindowMenuSwitch.cpp
-            src/guiapi/src/WindowMenuSpin.cpp
-            src/guiapi/src/WindowMenuSpinExponential.cpp
-            src/guiapi/src/WindowMenuItems.cpp
-            src/guiapi/src/MItem_menus.cpp
-            src/guiapi/src/MItem_print.cpp
-            src/guiapi/src/MItem_tools.cpp
-            src/guiapi/src/MItem_experimental_tools.cpp
-            src/guiapi/src/Jogwheel.cpp
-            src/guiapi/src/ScreenShot.cpp
-            src/guiapi/src/menu_spin_config_types.cpp
-            $<$<STREQUAL:${PRINTER},MINI>:src/guiapi/src/menu_spin_config_basic.cpp>
+    PRIVATE BuddyHeaders
+            CrashCatcher
+            Marlin
+            Arduino::Core
+            Arduino::TMCStepper
+            LwIP
+            FatFs
+            littlefs
+            STM32::USBHost
+            inih::inih
+            $<$<BOOL:${WUI}>:WUI>
+            jsmn::jsmn
+            QR
+            Buddy::Lang
+            CppStdExtensions
+            printf::printf
+            sysbase
+            Segger
+            tinyusb::tinyusb
+            $<$<BOOL:${HAS_MMU2}>:MMU2::MMU2>
+            mbedTLS
+            $<$<BOOL:${HAS_PUPPIES}>:lightmodbus>
+            freertos
+            error_codes
+            error_codes_mmu # TODO once MMU is not necessary for the build, replace with:
+                            # $<$<BOOL:${HAS_MMU2}>:error_codes_mmu>
+            bgcode_core
+            heatshrink_decoder
+            version
     )
-endif()
-
-if(GUI AND DEBUG) # gui and debug
-  target_sources(firmware PRIVATE src/gui/screen_menu_experimental_settings_debug.cpp)
-elseif(GUI) # gui, not debug
-  target_sources(firmware PRIVATE src/gui/screen_menu_experimental_settings_mini.cpp)
-endif()
-
-# Set fsdata filename for HTTPServer
-target_compile_definitions(firmware PRIVATE -DHTTPD_FSDATA_FILE="fsdata_wui_local.c")
-
-set_property(
-  SOURCE src/common/version.c
-  APPEND
-  PROPERTY COMPILE_DEFINITIONS
-           FW_BUILD_NUMBER=${BUILD_NUMBER}
-           FW_VERSION_FULL=${PROJECT_VERSION_FULL}
-           FW_VERSION=${PROJECT_VERSION}
-           FW_VERSION_SUFFIX=${PROJECT_VERSION_SUFFIX}
-           FW_VERSION_SUFFIX_SHORT=${PROJECT_VERSION_SUFFIX_SHORT}
-  )
-
-set_property(
-  SOURCE src/common/bsod.cpp src/common/appmain.cpp src/common/sys.cpp src/common/putslave.cpp
-  APPEND
-  PROPERTY COMPILE_DEFINITIONS HAS_GUI=$<BOOL:${GUI}>
-  )
-
-set_property(
-  SOURCE src/common/appmain.cpp src/common/marlin_test.cpp src/common/putslave.cpp
-         src/common/thread_measurement.cpp src/common/trinamic.cpp
-  APPEND
-  PROPERTY COMPILE_DEFINITIONS
-           INIT_TRINAMIC_FROM_MARLIN_ONLY=$<BOOL:${INIT_TRINAMIC_FROM_MARLIN_ONLY}>
-  )
-
-if(NOT CMAKE_CROSSCOMPILING)
-  enable_testing()
-  add_subdirectory(tests)
+elseif(BOARD STREQUAL "DWARF")
+  target_link_libraries(
+    firmware
+    PRIVATE Arduino::Core
+            Arduino::TMCStepper
+            BuddyHeaders
+            CrashCatcher
+            error_codes
+            freertos
+            Marlin
+            printf::printf
+    )
+elseif(BOARD STREQUAL "MODULARBED")
+  target_link_libraries(
+    firmware PRIVATE BuddyHeaders CrashCatcher error_codes freertos printf::printf
+    )
+elseif(BOARD STREQUAL "XBUDDY_EXTENSION")
+  # let us manage the libraries where needed, not globally
+elseif(BOARD STREQUAL "XL_DEV_KIT_XLB")
+  target_link_libraries(
+    firmware
+    PRIVATE BuddyHeaders
+            Marlin
+            Arduino::Core
+            Arduino::TMCStepper
+            inih::inih
+            CppStdExtensions
+            printf::printf
+            sysbase
+            Segger
+            $<$<BOOL:${HAS_MMU2}>:MMU2::MMU2>
+            mbedTLS
+            $<$<BOOL:${HAS_PUPPIES}>:lightmodbus>
+            freertos
+            error_codes
+            error_codes_mmu # TODO once MMU is not necessary for the build, replace with:
+                            # $<$<BOOL:${HAS_MMU2}>:error_codes_mmu>
+            bgcode_core # todo: remove
+            heatshrink_decoder # todo: remove
+            version
+    )
 endif()

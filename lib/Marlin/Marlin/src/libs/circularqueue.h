@@ -22,6 +22,8 @@
 #pragma once
 
 #include <stdint.h>
+#include <limits>
+#include <atomic>
 
 /**
  * @brief   Circular Queue class
@@ -51,7 +53,7 @@ class CircularQueue {
      *          of item this queue will handle and N defines the maximum number of
      *          items that can be stored on the queue.
      */
-    CircularQueue<T, N>() {
+    CircularQueue() {
       buffer.size = N;
       buffer.count = buffer.head = buffer.tail = 0;
     }
@@ -63,7 +65,7 @@ class CircularQueue {
      * @return  type T item
      */
     T dequeue() {
-      if (isEmpty()) return T();
+      assert(!isEmpty());
 
       uint8_t index = buffer.head;
 

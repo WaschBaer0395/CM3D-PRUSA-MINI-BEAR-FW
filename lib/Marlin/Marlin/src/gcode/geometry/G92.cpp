@@ -28,8 +28,47 @@
   #include "../../feature/I2CPositionEncoder.h"
 #endif
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * G92: Set current position to given X Y Z E
+ *### G90: Set to Absolute Positioning <a href="https://reprap.org/wiki/G-code#G90:_Set_to_Absolute_Positioning">G90: Set to Absolute Positioning</a>
+ *
+ *#### Usage
+ *
+ *    G90
+ */
+
+/**
+ *### G91: Set to Relative Positioning <a href="https://reprap.org/wiki/G-code#G91:_Set_to_Relative_Positioning">G91: Set to Relative Positioning</a>
+ *
+ *#### Usage
+ *
+ *    G91
+ */
+
+/**
+ *### G92: Get/Set current position <a href="https://reprap.org/wiki/G-code#G92:_Set_Position">G92: Set Position</a>
+ *
+ * Allows programming of absolute zero point, by reseting the current position to the values specified.
+ *
+ *#### Usage
+ *
+ *    G92 [ X | Y | Z | E ]
+ *
+ *#### Parameters
+ *
+ * - `X` - Set current position on X axis
+ * - `Y` - Set current position on Y axis
+ * - `Z` - Set current position on Z axis
+ * - `E` - Set current position on E axis
+ *
+ *#### Examples
+ *
+ *    G92         ; without any parameters or without any values behind the parameters reports current xyze position
+ *    G92 X10 E90 ; set the machine's X coordinate to 10, and the extrude coordinate to 90. No physical motion will occur.
+ *
  */
 void GcodeSuite::G92() {
 
@@ -58,20 +97,6 @@ void GcodeSuite::G92() {
           }
         #endif // Not SCARA
       } return;
-    #endif
-    #if ENABLED(POWER_LOSS_RECOVERY)
-      case 9: {
-        LOOP_XYZE(i) {
-          if (parser.seenval(axis_codes[i])) {
-            current_position[i] = parser.value_axis_units((AxisEnum)i);
-            #if IS_SCARA || !HAS_POSITION_SHIFT
-              if (i == E_AXIS) didE = true; else didXYZ = true;
-            #elif HAS_POSITION_SHIFT
-              if (i == E_AXIS) didE = true;
-            #endif
-          }
-        }
-      } break;
     #endif
     case 0: {
       LOOP_XYZE(i) {
@@ -110,3 +135,5 @@ void GcodeSuite::G92() {
 
   report_current_position();
 }
+
+/** @}*/

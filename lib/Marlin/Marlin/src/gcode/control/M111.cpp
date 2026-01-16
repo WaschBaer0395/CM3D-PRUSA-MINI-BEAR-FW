@@ -22,8 +22,20 @@
 
 #include "../gcode.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M111: Set the debug level
+ *### M111: Set the debug level <a href="https://reprap.org/wiki/G-code#M111:_Set_Debug_Level">M111: Set Debug Level</a>
+ *
+ *### Usage
+ *
+ *    M111 [ S ]
+ *
+ *#### Parameters
+ *
+ * - `S` - Debug feature flag
  */
 void GcodeSuite::M111() {
   if (parser.seen('S')) marlin_debug_flags = parser.byteval('S');
@@ -78,3 +90,5 @@ void GcodeSuite::M111() {
   }
   SERIAL_EOL();
 }
+
+/** @}*/

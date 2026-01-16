@@ -1,68 +1,89 @@
 #pragma once
 
-#include "gui.hpp"
-#include "window_header.hpp"
-#include "status_footer.h"
-#include "window_menu.hpp"
-#include "WinMenuContainer.hpp"
-#include "WindowMenuItems.hpp"
-#include <stdint.h>
-#include "resource.h"
-#include "screen.hpp"
-#include <new>
+#include <window_header.hpp>
+#include <status_footer.hpp>
+#include <WinMenuContainer.hpp>
+#include <window_menu.hpp>
+#include <screen.hpp>
 
-enum class EHeader { On,
-    Off }; //affect only events
-enum class EFooter { On,
-    Off };
-
-struct HelperConfig {
-    uint16_t lines;
-    uint16_t font_id;
-};
-
-constexpr static const HelperConfig HelpLines_None = { 0, IDR_FNT_SPECIAL };
-constexpr static const HelperConfig HelpLines_Default = { 4, IDR_FNT_SPECIAL };
-
-//parent to not repeat code in templates
-class IScreenMenu : public AddSuperWindow<screen_t> {
-protected:
-    constexpr static const char *no_labelS = "MISSING";
-    static string_view_utf8 no_label;
-    window_header_t header;
-    window_menu_t menu;
-    window_text_t help;
-    status_footer_t footer;
+/// Bits of ScreenMenuBase than can be made non-templated to save flash
+class ScreenMenuBase_ : public screen_t {
 
 public:
-    IScreenMenu(window_t *parent, string_view_utf8 label, Rect16 menu_item_rect, EFooter FOOTER, size_t helper_lines, uint32_t font_id);
-    void unconditionalDrawItem(uint8_t index);
+    virtual void InitState(screen_init_variant var) override {
+        if (auto pos = var.GetMenuPosition()) {
+            i_menu->restore_state(*pos);
+        }
+    }
+
+    virtual screen_init_variant GetCurrentState() const override {
+        screen_init_variant ret;
+        ret.SetMenuPosition(i_menu->get_restore_state());
+        return ret;
+    }
+
+protected:
+    ScreenMenuBase_(window_t *parent, const string_view_utf8 &label, EFooter show_footer, IWindowMenu *menu)
+        : screen_t(parent, parent != nullptr ? win_type_t::dialog : win_type_t::normal)
+        , header(this)
+        , footer(this)
+        , i_menu(menu) //
+    {
+        // Do NOT work with i_menu here, it is not yet constructed!
+        header.SetText(label);
+        footer.set_visible(show_footer == EFooter::On);
+    }
+
+protected:
+    window_header_t header;
+    StatusFooter footer;
+
+private:
+    IWindowMenu *i_menu = nullptr;
 };
 
-template <EHeader HEADER, EFooter FOOTER, const HelperConfig &HELP_CNF, class... T>
-class ScreenMenu : public AddSuperWindow<IScreenMenu> {
+template <typename Menu>
+class ScreenMenuBase : public ScreenMenuBase_ {
+
 protected:
-    //std::array<window_t*,sizeof...(T)> pElements;//todo menu item is not a window
+    ScreenMenuBase(window_t *parent, const string_view_utf8 &label, EFooter show_footer)
+        : ScreenMenuBase_(parent, label, show_footer, &menu.menu)
+        , menu(this, show_footer == EFooter::On ? GuiDefaults::RectScreenBody : GuiDefaults::RectScreenNoHeader) //
+    {
+        CaptureNormalWindow(menu); // set capture to list
+    }
+
+protected:
+    WindowExtendedMenu<Menu> menu;
+};
+
+template <EFooter FOOTER, class... T>
+class ScreenMenu : public ScreenMenuBase<WindowMenu> {
+protected:
+    // std::array<window_t*,sizeof...(T)> pElements;//todo menu item is not a window
     WinMenuContainer<T...> container;
 
 public:
-    ScreenMenu(string_view_utf8 label, window_t *parent = nullptr, Rect16 menu_item_rect = GuiDefaults::RectScreenBody);
+    ScreenMenu(const string_view_utf8 &label, window_t *parent = nullptr)
+        : ScreenMenuBase(parent, label, FOOTER) {
+        menu.menu.BindContainer(container);
+    }
 
-    //compiletime access by index
+    // compile time access by index
     template <std::size_t I>
     decltype(auto) Item() {
         return std::get<I>(container.menu_items);
     }
-    //compiletime access by type
+    // compile time access by type
     template <class TYPE>
     decltype(auto) Item() {
         return std::get<TYPE>(container.menu_items);
     }
-};
 
-template <EHeader HEADER, EFooter FOOTER, const HelperConfig &HELP_CNF, class... T>
-ScreenMenu<HEADER, FOOTER, HELP_CNF, T...>::ScreenMenu(string_view_utf8 label, window_t *parent, Rect16 menu_item_rect)
-    : AddSuperWindow<IScreenMenu>(parent, label, menu_item_rect, FOOTER, HELP_CNF.lines, HELP_CNF.font_id) {
-    menu.pContainer = &container;
-    menu.GetActiveItem()->SetFocus(); //set focus on new item//containder was not valid during construction, have to set its index again
-}
+    template <class ITEM1, class ITEM2>
+    bool SwapVisibility() {
+        return menu.menu.SwapVisibility(Item<ITEM1>(), Item<ITEM2>());
+    }
+
+    // ShowDevOnly intentionally not supported, can be set only in ctor
+};

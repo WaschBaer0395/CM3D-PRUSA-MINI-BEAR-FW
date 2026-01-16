@@ -25,8 +25,23 @@
 
 #if EXTRUDERS
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M221: Set extrusion percentage (M221 T0 S95)
+ *### M221: Get/Set extrusion percentage <a href="https://reprap.org/wiki/G-code#M221:_Set_extrude_factor_override_percentage">M221: Set extrude factor override percentage</a>
+ *
+ *#### Usage
+ *
+ *    M221 [ S | T ]
+ *
+ *#### Parameters
+ *
+ * - `S` - Flow percentage
+ * - `T` - Tool
+ *
+ * Without parameters prints the current extrusion percentage
  */
 void GcodeSuite::M221() {
 
@@ -34,7 +49,13 @@ void GcodeSuite::M221() {
   if (target_extruder < 0) return;
 
   if (parser.seenval('S')) {
-    planner.flow_percentage[target_extruder] = parser.value_int();
+    int flow_percentage = parser.value_int();
+    #if HAS_GCODE_COMPATIBILITY()
+      if (gcode.compatibility.mk3_compatibility_mode) {
+        flow_percentage = (float)flow_percentage / 0.95;
+      }
+    #endif
+    planner.flow_percentage[target_extruder] = flow_percentage;
     planner.refresh_e_factor(target_extruder);
   }
   else {
@@ -46,5 +67,7 @@ void GcodeSuite::M221() {
     SERIAL_EOL();
   }
 }
+
+/** @}*/
 
 #endif // EXTRUDERS

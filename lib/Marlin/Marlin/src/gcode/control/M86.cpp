@@ -21,12 +21,27 @@
  */
 
 #include "../gcode.h"
-#include "../../feature/safety_timer.h"
+#include <feature/safety_timer/safety_timer.hpp>
+
+/** \addtogroup G-Codes
+ * @{
+ */
 
 /**
- * M86: Set Safety Timer expiration time
+ *### M86: Set Safety Timer expiration time <a href="https://reprap.org/wiki/G-code#M86:_Set_Safety_Timeout">M86: Set Safety Timeout</a>
+ *
+ *#### Usage
+ *
+ *     M86 [ S ]
+ *
+ *#### Parameters
+ *
+ *  - `S` - Safety timer interval [seconds]
+ *
  */
 void GcodeSuite::M86() {
   if (parser.seen('S'))
-    safety_timer_set_interval(parser.value_millis_from_seconds());
+    buddy::safety_timer().set_interval(parser.value_millis_from_seconds());
 }
+
+/** @}*/

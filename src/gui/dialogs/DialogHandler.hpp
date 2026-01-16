@@ -1,30 +1,32 @@
 #pragma once
 
 #include <stdint.h>
-#include "client_fsm_types.h"
-#include "DialogFactory.hpp"
+#include "IDialogMarlin.hpp"
+#include "fsm_states.hpp"
+#include "static_alocation_ptr.hpp"
 
 class DialogHandler {
-    static_unique_ptr<IDialogMarlin> ptr;
-    DialogFactory::Ctors dialog_ctors;
-    ClientFSM waiting_closed = ClientFSM::_none;
+    template <ClientFSM fsm_, typename Dialog>
+    friend struct FSMDialogDef;
+    friend struct FSMWaitDef;
 
-    DialogHandler(DialogFactory::Ctors ctors)
-        : dialog_ctors(ctors) {}
+    static_unique_ptr<IDialogMarlin> ptr;
+    std::optional<fsm::States::Top> current_fsm_top;
+    std::pair<ClientFSM, fsm::BaseData> last_fsm_change;
+    std::optional<std::pair<ClientFSM, fsm::BaseData>> dialog_cache;
+    DialogHandler() = default;
     DialogHandler(DialogHandler &) = delete;
 
-    void open(ClientFSM dialog, uint8_t data);
-    void close(ClientFSM dialog);
-    void change(ClientFSM dialog, uint8_t phase, uint8_t progress_tot, uint8_t progress);
-
-    void wait_until_closed(ClientFSM dialog, uint8_t data);
+    void close(ClientFSM fsm_type);
+    void change(ClientFSM fsm_type, fsm::BaseData data);
+    void open(ClientFSM fsm_type, fsm::BaseData data); // can be enforced (pre opened), unlike change/close
 
 public:
-    //accessor for static methods
+    // accessor for static methods
     static DialogHandler &Access();
-    //static methods to be registerd as callbacks
-    static void Open(ClientFSM dialog, uint8_t data);
-    static void Close(ClientFSM dialog);
-    static void Change(ClientFSM dialog, uint8_t phase, uint8_t progress_tot, uint8_t progress);
-    static void WaitUntilClosed(ClientFSM dialog, uint8_t data); //opens dialog, waits until closed, auto loops
+
+    void Loop(); // synchronization loop, call it outside event
+    bool IsOpen() const; // returns true if any dialog is active
+
+    bool IsAnyOpen() const;
 };

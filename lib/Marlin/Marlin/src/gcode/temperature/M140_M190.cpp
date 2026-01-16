@@ -33,14 +33,22 @@
   #include "../../module/printcounter.h"
 #endif
 
-#if ENABLED(PRINTER_EVENT_LEDS)
-  #include "../../feature/leds/leds.h"
-#endif
-
 #include "../../Marlin.h" // for wait_for_heatup and idle()
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M140: Set bed temperature
+ *### M140: Set bed temperature <a href="https://reprap.org/wiki/G-code#M140:_Set_Bed_Temperature_.28Fast.29">M140: Set Bed Temperature (Fast)</a>
+ *
+ *#### Usage
+ *
+ *    M140 [ S ]
+ *
+ * #### Parameters
+ *
+ * - `S` - Set target bed temperature
  */
 void GcodeSuite::M140() {
   if (DEBUGGING(DRYRUN)) return;
@@ -48,8 +56,16 @@ void GcodeSuite::M140() {
 }
 
 /**
- * M190: Sxxx Wait for bed current temp to reach target temp. Waits only when heating
- *       Rxxx Wait for bed current temp to reach target temp. Waits when heating and cooling
+ *### M190: Wait for bed current temp to reach target temp <a href="https://reprap.org/wiki/G-code#M190:_Wait_for_bed_temperature_to_reach_target_temp">M190: Wait for bed temperature to reach target temp</a>
+ *
+ *#### Usage
+ *
+ *    M190 [ S | R ]
+ *
+ *#### Parameters
+ *
+ * - `S` - Set target bed temperature and waits only when heating
+ * - `R` - Set target bed temperature and waits when heating and/or cooling
  */
 void GcodeSuite::M190() {
   if (DEBUGGING(DRYRUN)) return;
@@ -64,9 +80,9 @@ void GcodeSuite::M190() {
   }
   else return;
 
-  ui.set_status_P(thermalManager.isHeatingBed() ? GET_TEXT(MSG_BED_HEATING) : GET_TEXT(MSG_BED_COOLING));
-
   thermalManager.wait_for_bed(no_wait_for_cooling);
 }
+
+/** @}*/
 
 #endif // HAS_HEATED_BED

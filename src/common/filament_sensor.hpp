@@ -1,46 +1,89 @@
-/*
- * filament_sensor.hpp
- *
- *  Created on: 2019-12-16
- *      Author: Radek Vana
+/**
+ * @file filament_sensor.hpp
+ * @author Radek Vana
+ * @brief basic api of filament sensor
+ * @date 2019-12-16
  */
 
 #pragma once
 
-#include "stdint.h"
+#include <stdint.h>
+#include <optional>
+#include <atomic>
+#include "filament_sensor_states.hpp"
+#include "hx717.hpp"
 
-enum class fsensor_t : uint8_t {
-    NotInitialized, //enable enters this state too
-    HasFilament,
-    NoFilament,
-    NotConnected,
-    Disabled
+class IFSensor {
+    friend class FilamentSensors;
+
+public:
+    typedef int32_t value_type;
+    static constexpr int32_t undefined_value = HX717::undefined_value;
+
+    enum class Event {
+        no_event,
+        filament_inserted,
+        filament_removed
+    };
+
+    inline FilamentSensorState get_state() const { return state; }
+
+    /// Returns whether the filament sensor is enabled.
+    /// Does not look in the EEPROM/config_store, only respects the sensor current state.
+    inline bool is_enabled() const {
+        return state != FilamentSensorState::Disabled;
+    }
+
+    /**
+     * @brief Get filtered sensor-specific value.
+     * Useful for sensor info or debug.
+     * @return dimensionless value specific to the inherited class
+     */
+    virtual int32_t GetFilteredValue() const { return 0; };
+
+    // interface methods for sensors with calibration
+    // meant to use just flags to be thread safe
+    enum class CalibrateRequest {
+        CalibrateHasFilament,
+        CalibrateNoFilament,
+        NoCalibration,
+    };
+    virtual void SetCalibrateRequest(CalibrateRequest) {}
+    virtual bool IsCalibrationFinished() const { return true; }
+    virtual void SetInvalidateCalibrationFlag() {}
+
+protected:
+    // Protected functions are only to be called from FilamentSensors to prevent race conditions
+
+    std::atomic<FilamentSensorState> state = FilamentSensorState::Disabled;
+
+    /// Records metrics specific for the sensor
+    virtual void record_state() {};
+
+    /// sensor type specific evaluation cycle
+    virtual void cycle() = 0;
+
+    /// Compares states between this function calls and sets last_event() accordingly.
+    void check_for_events();
+
+    /// Returns potential event raised by the last check_for_events() call
+    inline Event last_event() const {
+        return last_event_;
+    }
+
+    /// Resets the sensor state (sets to disabled if set=false, starts initializing the sensor if true).
+    /// Resets the state even if you call set_enabled(true) while the sensor is enabled (that is okay).
+    /// Does not change the EEPROM.
+    /// This function is not thread-safe.
+    virtual void force_set_enabled(bool set);
+
+    inline void set_enabled(bool set) {
+        if (is_enabled() != set) {
+            force_set_enabled(set);
+        }
+    }
+
+private:
+    FilamentSensorState last_check_event_state_ = FilamentSensorState::Disabled;
+    Event last_event_ = Event::no_event;
 };
-
-//thread safe functions
-fsensor_t fs_get_state();
-int fs_did_filament_runout(); //for arduino / marlin
-
-//switch behavior when M600 should be send
-void fs_send_M600_on_edge(); //default behavior
-void fs_send_M600_on_level();
-void fs_send_M600_never();
-
-//thread safe functions, but cannot be called from interrupt
-void fs_enable();
-void fs_disable();
-
-uint8_t fs_get__send_M600_on__and_disable();
-void fs_restore__send_M600_on(uint8_t send_M600_on);
-fsensor_t fs_wait_initialized();
-void fs_clr_sent();
-
-//not thread safe functions
-void fs_init_on_edge();
-void fs_init_on_level();
-void fs_init_never();
-void fs_cycle(); //call it in thread, max call speed 1MHz
-
-//for debug
-int fs_was_M600_send();
-char fs_get_send_M600_on();

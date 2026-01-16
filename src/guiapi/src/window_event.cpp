@@ -1,19 +1,9 @@
-//window_event.cpp
+// window_event.cpp
 
 #include "window_event.hpp"
-#include "dbg.h"
+#include <logging/log.hpp>
+#include "gui_time.hpp"
 
-EventLock::EventLock(const char *event_method_name, window_t *sender, GUI_event_t event) {
-    bool print = false;
+LOG_COMPONENT_REF(GUI);
 
-    // clang-format off
-        // uncomment debug options
-        if (GUI_event_IsKnob(event)) print = true;
-        if (GUI_event_IsWindowKnobReaction(event)) print = true;
-        //if (GUI_event_IsAnyButLoop(event)) print = true;
-    // clang-format on
-
-    if (print) {
-        _dbg("%s ptr: %p, event %s\n", event_method_name, sender, GUI_event_prt(event));
-    }
-} //ctor must be private
+GUI_event_t last_gui_input_event = GUI_event_t::_count;

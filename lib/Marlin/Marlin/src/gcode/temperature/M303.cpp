@@ -22,18 +22,29 @@
 
 #include "../../inc/MarlinConfig.h"
 
-#if HAS_PID_HEATING
+#if HAS_PID_HEATING && ENABLED(PID_AUTOTUNE)
 
 #include "../gcode.h"
 #include "../../module/temperature.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M303: PID relay autotune
+ *### M303: Run PID tuning <a href="https://reprap.org/wiki/G-code#M303:_Run_PID_tuning">M303: Run PID tuning</a>
  *
- *       S<temperature> sets the target temperature. (default 150C / 70C)
- *       E<extruder> (-1 for the bed) (default 0)
- *       C<cycles> Minimum 3. Default 5.
- *       U<bool> with a non-zero value will apply the result to current settings
+ *#### Usage
+ *
+ *    M303 [ S | E | C | U ]
+ *
+ *#### Parameters
+ *
+ * - `S` - Set the target temperature. (default 150C / 70C)
+ * - `E` - Extruder
+ *   - `-1` - for the bed
+ * - `C` - Cycles minimum 3. Default 5.
+ * - `U` - Use PID result
  */
 void GcodeSuite::M303() {
   #if ENABLED(PIDTEMPBED)
@@ -62,5 +73,7 @@ void GcodeSuite::M303() {
 
   thermalManager.PID_autotune(temp, e, c, u);
 }
+
+/** @}*/
 
 #endif // HAS_PID_HEATING

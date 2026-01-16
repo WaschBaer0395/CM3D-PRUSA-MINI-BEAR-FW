@@ -1,20 +1,14 @@
-/*
- * screen_messages.cpp
- *
- *  Created on: Nov 13, 2019
- *      Author: Migi
- */
-
+#include <feature/print_status_message/print_status_message_mgr.hpp>
+#include <feature/print_status_message/print_status_message_formatter_buddy.hpp>
 #include "screen_messages.hpp"
-#include "marlin_server.h"
 #include "ScreenHandler.hpp"
 #include <stdlib.h>
-#include <stdint.h>
 #include "i18n.h"
-#include "gui.hpp"
+#include <sound.hpp>
+#include <utils/string_builder.hpp>
 
 screen_messages_data_t::screen_messages_data_t()
-    : AddSuperWindow<screen_t>()
+    : screen_t()
     , header(this)
     , footer(this)
     , term(this, GuiDefaults::RectScreenBody.TopLeft(), &term_buff) { // Rect16(10, 28, 11 * 20, 18 * 16))
@@ -23,17 +17,33 @@ screen_messages_data_t::screen_messages_data_t()
     ClrOnSerialClose();
 }
 
-void screen_messages_data_t::windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) {
-    if (event == GUI_event_t::CLICK) {
+void screen_messages_data_t::windowEvent(window_t *sender, GUI_event_t event, void *param) {
+    switch (event) {
+
+    case GUI_event_t::CLICK:
+    case GUI_event_t::TOUCH_SWIPE_LEFT:
+    case GUI_event_t::TOUCH_SWIPE_RIGHT:
+        Sound_Play(eSOUND_TYPE::ButtonEcho);
         Screens::Access()->Close();
-    } else {
-        SuperWindowEvent(sender, event, param);
+        return;
+
+    case GUI_event_t::LOOP:
+        print_status_message().walk_history([this](const PrintStatusMessageManager::Record &msg) {
+            if (msg.id <= last_message_id) {
+                return true;
+            }
+
+            ArrayStringBuilder<256> buf;
+            PrintStatusMessageFormatterBuddy::format(buf, msg.message);
+            term.Printf("%s\n", buf.str());
+            last_message_id = msg.id;
+            return true;
+        });
+        break;
+
+    default:
+        break;
     }
 
-    CircleStringBuffer<MSG_STACK_SIZE, MSG_MAX_LENGTH>::Elem elem;
-
-    //must be last window_frame_t could validate term
-    while (MsgCircleBuffer().ConsumeFirst(elem)) {
-        term.Printf("%s\n", (const char *)elem);
-    }
+    screen_t::windowEvent(sender, event, param);
 }

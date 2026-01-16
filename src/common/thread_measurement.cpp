@@ -1,58 +1,45 @@
-// thread_measurement.c
-#include <stdbool.h>
-#include <algorithm>
-#include "thread_measurement.h"
-#include "cmsis_os.h" //osDelay
-#include "filament_sensor.hpp"
-#include "marlin_client.h"
-#include "trinamic.h"
-#include "stm32f4xx_hal.h"
+/// @file
+#include <common/thread_measurement.h>
 
-static inline bool checkTimestampsAscendingOrder(uint32_t a, uint32_t b) {
-    uint32_t u = (b - a);
-    return !(u & 0x80000000u);
+#include <common/filament_sensors_handler.hpp>
+#include <common/metric.h>
+#include <feature/tmc_util.h>
+#include <freertos/timing.hpp>
+#include <option/has_burst_stepping.h>
+#include <option/has_phase_stepping.h>
+
+#if HAS_PHASE_STEPPING()
+    #include <feature/phase_stepping/phase_stepping.hpp>
+#endif
+
+METRIC_DEF(metric_tmc_sg_x, "tmc_sg_x", METRIC_VALUE_INTEGER, 10, METRIC_DISABLED);
+METRIC_DEF(metric_tmc_sg_y, "tmc_sg_y", METRIC_VALUE_INTEGER, 10, METRIC_DISABLED);
+METRIC_DEF(metric_tmc_sg_z, "tmc_sg_z", METRIC_VALUE_INTEGER, 10, METRIC_DISABLED);
+METRIC_DEF(metric_tmc_sg_e, "tmc_sg_e", METRIC_VALUE_INTEGER, 10, METRIC_DISABLED);
+
+static void sample_sg(metric_t *metric, uint8_t axis) {
+    if (metric->enabled) {
+        metric_record_integer(metric, tmc_sg_result(axis));
+    }
 }
 
-void StartMeasurementTask(void const *argument) {
-    marlin_client_init();
-    marlin_client_wait_for_start_processing();
-    fs_init_on_edge();
-    marlin_client_set_event_notify(MARLIN_EVT_MSK_FSM, nullptr);
+static void sample_sg() {
+#if HAS_PHASE_STEPPING() && !HAS_BURST_STEPPING()
+    if (phase_stepping::any_axis_enabled()) {
+        return;
+    }
+#endif
+    sample_sg(&metric_tmc_sg_x, 0);
+    sample_sg(&metric_tmc_sg_y, 1);
+    sample_sg(&metric_tmc_sg_z, 2);
+    sample_sg(&metric_tmc_sg_e, 3);
+}
 
-    uint32_t next_fs_cycle = HAL_GetTick();
-    uint32_t next_sg_cycle = HAL_GetTick();
-
+void StartMeasurementTask(void const *) {
+    FSensors_instance().task_init();
     for (;;) {
-        marlin_client_loop();
-        uint32_t now = HAL_GetTick();
-
-        // sample filament sensor
-        if (checkTimestampsAscendingOrder(next_fs_cycle, now)) {
-            fs_cycle();
-            // call fs_cycle every ~50 ms
-            next_fs_cycle = now + 50;
-        }
-
-        // sample stallguard
-        if (checkTimestampsAscendingOrder(next_sg_cycle, now)) {
-            tmc_sample();
-
-            // This represents the lowest samplerate per axis
-            uint32_t next_delay = 40;
-
-            auto sg_mask = tmc_get_sg_mask();
-            int num_of_enabled_axes = 0;
-
-            for (unsigned axis = 0; axis < 4; axis++) {
-                if (sg_mask & (1 << axis))
-                    num_of_enabled_axes += 1;
-            }
-
-            if (num_of_enabled_axes)
-                next_delay /= num_of_enabled_axes;
-            next_sg_cycle = now + next_delay;
-        }
-
-        osDelay(checkTimestampsAscendingOrder(next_fs_cycle, next_sg_cycle) ? next_fs_cycle - now : next_sg_cycle - now);
+        FSensors_instance().task_cycle();
+        sample_sg();
+        freertos::delay(50);
     }
 }

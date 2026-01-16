@@ -1,20 +1,20 @@
-//screen_reset_perror.hpp
+// screen_reset_perror.hpp
 #pragma once
 #include "gui.hpp"
 #include "window_text.hpp"
 #include "screen.hpp"
 
-class screen_reset_error_data_t : public AddSuperWindow<screen_t> {
+/**
+ * @brief Generic screen shown after reset caused by error.
+ * Reads error details from dump.
+ */
+class ScreenResetError : public screen_t {
+    std::array<char, 42> fw_version_str;
 
 public:
-    screen_reset_error_data_t();
+    ScreenResetError(const Rect16 &fw_version_rect);
 
 protected:
-    /// starts sound and avoids repetitive starting
-    void start_sound();
-    virtual void draw() override;
-    virtual void windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) override;
-
-private:
-    bool sound_started;
+    window_text_t fw_version_txt;
+    virtual void windowEvent(window_t *sender, GUI_event_t event, void *param) override;
 };

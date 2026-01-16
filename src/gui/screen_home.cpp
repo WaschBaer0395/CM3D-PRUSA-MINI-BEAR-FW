@@ -1,127 +1,465 @@
-//screen_home.cpp
+// screen_home.cpp
 #include "screen_home.hpp"
-#include "ff.h"
-#include "dbg.h"
+#include "stdio.h"
+#include "file_raii.hpp"
 
 #include "config.h"
 
-#include "marlin_client.h"
-#include "screen_print_preview.hpp"
+#include "marlin_client.hpp"
 #include "screen_filebrowser.hpp"
 #include "print_utils.hpp"
+#include "filename_type.hpp"
+#include "settings_ini.hpp"
+#include <utils/string_builder.hpp>
+#include <sys/unistd.h>
+#include <wui_api.h>
+#include <version/version.hpp>
+
+#if ENABLED(POWER_PANIC)
+    #include "power_panic.hpp"
+#endif
 
 #include "ScreenHandler.hpp"
+#include "screen_move_z.hpp"
 #include "ScreenFactory.hpp"
-#include "screen_menus.hpp"
 #include "gui_media_events.hpp"
+#include "DialogHandler.hpp"
+#include "img_resources.hpp"
+#include "tasks.hpp"
 
+#include "screen_printing.hpp"
+#include "filament_sensors_handler.hpp"
+
+#include "RAII.hpp"
+#include "lazyfilelist.hpp"
 #include "i18n.h"
+#include "i2c.hpp"
+#include "netdev.h"
+#include "ini.h"
 
-const uint16_t icons[6] = {
-    IDR_PNG_print_58px,
-    IDR_PNG_preheat_58px,
-    IDR_PNG_spool_58px,
-    IDR_PNG_calibrate_58px,
-    IDR_PNG_settings_58px,
-    IDR_PNG_info_58px
+#include <option/has_loadcell.h>
+#include <option/developer_mode.h>
+#include <device/peripherals.h>
+#include <option/has_mmu2.h>
+#include <option/has_human_interactions.h>
+
+#include "screen_menu_settings.hpp"
+#include "screen_menu_filament.hpp"
+#include "screen_menu_control.hpp"
+#include <screen_menu_info.hpp>
+
+#if HAS_MMU2()
+    #include "screen_menu_filament_mmu.hpp"
+#endif
+
+#include <crash_dump/crash_dump_handlers.hpp>
+#include <selftest_result_evaluation.hpp>
+#include <find_error.hpp>
+#include <transfers/transfer_file_check.hpp>
+#include <guiconfig/guiconfig.h>
+
+#include "usb_host.h"
+
+// TODO remove netdev_is_enabled after it is defined
+bool __attribute__((weak)) netdev_is_enabled([[maybe_unused]] const uint32_t netdev_id) { return true; }
+
+bool screen_home_data_t::ever_been_opened = false;
+
+#if HAS_MINI_DISPLAY()
+    #define GEN_ICON_NAMES(ICON) \
+        { img::ICON##_64x64, img::ICON##_64x64_focused, img::ICON##_64x64_disabled }
+#endif
+#if HAS_LARGE_DISPLAY()
+    #define GEN_ICON_NAMES(ICON) \
+        { img::ICON##_80x80, img::ICON##_80x80_focused, img::ICON##_80x80_disabled }
+#endif
+
+static constexpr const WindowMultiIconButton::Pngs icons[] = {
+    GEN_ICON_NAMES(print),
+    GEN_ICON_NAMES(preheat),
+    GEN_ICON_NAMES(spool),
+    GEN_ICON_NAMES(calibrate),
+    GEN_ICON_NAMES(settings),
+    GEN_ICON_NAMES(info),
+    GEN_ICON_NAMES(spools)
 };
 
 constexpr size_t labelPrintId = 0;
 constexpr size_t labelNoUSBId = 6;
+constexpr size_t iconNonMMUId = 2;
+constexpr size_t iconMMUId = 6;
+constexpr size_t buttonFilamentIndex = 2;
 
-const char *labels[7] = {
+#if HAS_MINI_DISPLAY()
+constexpr size_t buttonsXSpacing = 15;
+constexpr size_t buttonTextWidth = 80;
+constexpr size_t buttonTextHeight = 13; // font_regular_7x13
+
+constexpr size_t buttonTopOffset = 88;
+constexpr size_t buttonTextTopOffset = 155;
+
+constexpr Rect16 logoRect = Rect16(41, 31, 158, 40);
+#endif
+
+#if HAS_LARGE_DISPLAY()
+constexpr size_t buttonsXSpacing = 40;
+constexpr size_t buttonTextWidth = 99;
+constexpr size_t buttonTextHeight = 23;
+
+constexpr size_t buttonTopOffset = 53;
+constexpr size_t buttonTextTopOffset = buttonTopOffset + GuiDefaults::ButtonIconSize + 5;
+#endif
+
+constexpr size_t buttonTextSpacing = GuiDefaults::ButtonIconSize + buttonsXSpacing - buttonTextWidth;
+constexpr size_t buttonsLeftOffset = (GuiDefaults::ScreenWidth - 3 * GuiDefaults::ButtonIconSize - 2 * buttonsXSpacing) / 2;
+constexpr size_t buttonsTextsLeftOffset = (GuiDefaults::ScreenWidth - 3 * buttonTextWidth - 2 * buttonTextSpacing) / 2;
+
+static constexpr Rect16 buttonRect(size_t col, size_t row) {
+    return Rect16(
+        buttonsLeftOffset + (buttonsXSpacing + GuiDefaults::ButtonIconSize) * col,
+        buttonTopOffset + (GuiDefaults::ButtonIconVerticalSpacing + GuiDefaults::ButtonIconSize) * row,
+        GuiDefaults::ButtonIconSize,
+        GuiDefaults::ButtonIconSize);
+}
+
+static constexpr Rect16 buttonTextRect(size_t col, size_t row) {
+    return Rect16(
+        buttonsTextsLeftOffset + (buttonsXSpacing + GuiDefaults::ButtonIconSize) * col,
+        buttonTextTopOffset + (GuiDefaults::ButtonIconVerticalSpacing + GuiDefaults::ButtonIconSize) * row,
+        buttonTextWidth,
+        buttonTextHeight);
+}
+
+const char *labels[] = {
     N_("Print"),
     N_("Preheat"),
     N_("Filament"),
-    N_("Calibration"),
+    N_("Control"),
     N_("Settings"),
     N_("Info"),
     N_("No USB") // label variant for first button
 };
-static bool find_latest_gcode(char *fpath, int fpath_len, char *fname, int fname_len);
 
 bool screen_home_data_t::usbWasAlreadyInserted = false;
+bool screen_home_data_t::need_check_wifi_credentials = true;
 
+[[maybe_unused]] static bool find_latest_gcode(char *fpath, int fpath_len) {
+    auto sb = StringBuilder::from_ptr(fpath, fpath_len);
+    sb.append_string("/usb/");
+
+    F_DIR_RAII_Iterator dir(fpath);
+    if (dir.result == ResType::NOK) {
+        return false;
+    }
+
+    // prepare the item at the zeroth position according to sort policy
+    FileSort::Entry entry;
+
+    while (dir.FindNext()) {
+        const FileSort::EntryRef curr(*dir.fno, fpath);
+
+        if (curr.type != FileSort::EntryType::FILE) {
+            continue;
+        }
+
+        if (entry.is_valid() && !FileSort::less_by_time(curr, entry)) {
+            continue;
+        }
+
+        entry.CopyFrom(curr);
+    }
+
+    if (!entry.is_valid()) {
+        return false;
+    }
+
+    sb.append_string(entry.sfn);
+    return sb.is_ok();
+}
+
+static void FilamentBtn_cb(window_t &) {
+    Screens::Access()->Open(ScreenFactory::Screen<ScreenMenuFilament>);
+}
+
+#if HAS_MMU2()
+static void FilamentBtnMMU_cb(window_t &) {
+    Screens::Access()->Open(ScreenFactory::Screen<ScreenMenuFilamentMMU>);
+}
+#endif
+
+// clang-format off
 screen_home_data_t::screen_home_data_t()
-    : AddSuperWindow<screen_t>()
-    , usbInserted(marlin_vars()->media_inserted)
+    : screen_t()
+    , usbInserted(marlin_vars().media_inserted)
     , header(this)
     , footer(this)
-    , logo(this, Rect16(41, 31, 158, 40), IDR_PNG_prusa_printer_logo)
-    , w_buttons { { this, Rect16(), 0, []() { Screens::Access()->Open(ScreenFactory::Screen<screen_filebrowser_data_t>); } },
-        { this, Rect16(), 0, []() { Screens::Access()->Open(GetScreenMenuPreheat); } },
-        { this, Rect16(), 0, []() { Screens::Access()->Open(GetScreenMenuFilament); } },
-        { this, Rect16(), 0, []() { Screens::Access()->Open(GetScreenMenuCalibration); } },
-        { this, Rect16(), 0, []() { Screens::Access()->Open(GetScreenMenuSettings); } },
-        { this, Rect16(), 0, []() { Screens::Access()->Open(GetScreenMenuInfo); } } }
-    , w_labels { { this, Rect16(), is_multiline::no },
+#if HAS_MINI_DISPLAY()
+    , logo(this, logoRect, &img::prusa_mini_logo_153x40)
+#endif
+    , w_buttons {
+        { this, Rect16(), nullptr, [](window_t&) { Screens::Access()->Open(ScreenFactory::Screen<screen_filebrowser_data_t>); } },
+        { this, Rect16(), nullptr, [](window_t&) { marlin_client::gcode_printf("M1700 T-1"); } },
+        { this, Rect16(), nullptr, FilamentBtn_cb },
+        { this, Rect16(), nullptr, [](window_t&) { Screens::Access()->Open(ScreenFactory::Screen<ScreenMenuControl>); } },
+        { this, Rect16(), nullptr, [](window_t&) { Screens::Access()->Open(ScreenFactory::Screen<ScreenMenuSettings>); } },
+        { this, Rect16(), nullptr, [](window_t&) { Screens::Access()->Open(ScreenFactory::Screen<ScreenMenuInfo>); }}
+    },
+    w_labels {
         { this, Rect16(), is_multiline::no },
         { this, Rect16(), is_multiline::no },
         { this, Rect16(), is_multiline::no },
         { this, Rect16(), is_multiline::no },
-        { this, Rect16(), is_multiline::no } }
+        { this, Rect16(), is_multiline::no },
+        { this, Rect16(), is_multiline::no }
+    } {
+    // clang-format on
 
-{
+    EnableLongHoldScreenAction();
     window_frame_t::ClrMenuTimeoutClose();
     window_frame_t::ClrOnSerialClose(); // don't close on Serial print
 
-    header.SetIcon(IDR_PNG_home_shape_16px);
-#ifndef _DEBUG
-    header.SetText(_("HOME"));
-#else
-    static const uint8_t msgHomeDebugRolling[] = "HOME - DEBUG - what a beautifull rolling text";
-    header.SetText(string_view_utf8::MakeCPUFLASH(msgHomeDebugRolling)); // intentionally not translated
+#if !HAS_MINI_DISPLAY()
+    header.SetIcon(&img::home_shape_16x16);
 #endif
+
+    {
+        StringBuilder sb(header_text);
+        sb.append_string("PRUSA ");
+        sb.append_string(PrinterModelInfo::current().id_str);
+        sb.append_string(" ");
+        sb.append_string(version::project_version);
+        sb.append_string(version::project_version_suffix_short);
+#if DEVELOPER_MODE()
+        sb.append_string(" DEV");
+#endif
+#ifdef _DEBUG
+        sb.append_string(" DBG");
+#endif
+        header.SetText(string_view_utf8::MakeRAM(header_text.data()));
+    }
 
     for (uint8_t row = 0; row < 2; row++) {
         for (uint8_t col = 0; col < 3; col++) {
             const size_t i = row * 3 + col;
-            w_buttons[i].rect = Rect16(8 + (15 + 64) * col, 88 + (14 + 64) * row, 64, 64);
-            w_buttons[i].SetIdRes(icons[i]);
-
-            w_labels[i].rect = Rect16(80 * col, 154 + (15 + 64) * row, 80, 14);
-            w_labels[i].font = resource_font(IDR_FNT_SMALL);
-            w_labels[i].SetAlignment(ALIGN_CENTER);
+            w_buttons[i].SetRect(buttonRect(col, row));
+            w_buttons[i].SetRes(&icons[i]);
+            w_labels[i].SetRect(buttonTextRect(col, row));
+            w_labels[i].set_font(Font::small);
+            w_labels[i].SetAlignment(Align_t::Center());
             w_labels[i].SetPadding({ 0, 0, 0, 0 });
             w_labels[i].SetText(_(labels[i]));
         }
     }
+
+    filamentBtnSetState();
 
     if (!usbInserted) {
         printBtnDis();
     } else {
         usbWasAlreadyInserted = true;
     }
+    ever_been_opened = true;
 }
 
 screen_home_data_t::~screen_home_data_t() {
     GuiMediaEventsHandler::ConsumeOneClickPrinting();
 }
 
-void screen_home_data_t::draw() {
-    super::draw();
-#ifdef _DEBUG
-    static const char dbg[] = "DEBUG";
-    display::DrawText(Rect16(180, 31, 60, 13), string_view_utf8::MakeCPUFLASH((const uint8_t *)dbg), resource_font(IDR_FNT_SMALL), COLOR_BLACK, COLOR_RED);
-#endif //_DEBUG
+#if HAS_NFC()
+void screen_home_data_t::update_nfc_state() {
+    if (GetLastDialog()) {
+        nfc_enable.reset();
+    } else {
+        if (!nfc_enable) {
+            nfc_enable.emplace();
+        }
+    }
+}
+#endif
+
+void screen_home_data_t::filamentBtnSetState() {
+#if HAS_MMU2()
+    const MMU2::xState new_state = MMU2::xState(marlin_vars().mmu2_state.get());
+    if (new_state != mmu_state) {
+        mmu_state = new_state;
+
+        // did not want to include MMU
+        // it might be good idea to move mmu enum to extra header
+        // TODO move this code
+        switch (mmu_state) {
+        case MMU2::xState::Active:
+            w_buttons[buttonFilamentIndex].SetRes(&icons[iconMMUId]);
+            w_buttons[buttonFilamentIndex].SetAction(FilamentBtnMMU_cb);
+            w_buttons[buttonFilamentIndex].Unshadow();
+            w_buttons[buttonFilamentIndex].Enable();
+            break;
+        case MMU2::xState::Connecting:
+        case MMU2::xState::Bootloader:
+            w_buttons[buttonFilamentIndex].SetRes(&icons[iconMMUId]);
+            if (w_buttons[buttonFilamentIndex].IsFocused()) {
+                w_buttons[buttonFilamentIndex - 1].SetFocus();
+            }
+            w_buttons[buttonFilamentIndex].Shadow();
+            w_buttons[buttonFilamentIndex].Disable();
+            break;
+        case MMU2::xState::Stopped:
+            w_buttons[buttonFilamentIndex].SetRes(&icons[iconNonMMUId]);
+            w_buttons[buttonFilamentIndex].SetAction(FilamentBtn_cb);
+            w_buttons[buttonFilamentIndex].Unshadow();
+            w_buttons[buttonFilamentIndex].Enable();
+            break;
+        }
+    }
+#endif
 }
 
-void screen_home_data_t::windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) {
+void screen_home_data_t::handle_crash_dump() {
+    ::crash_dump::BufferT dump_buffer;
+    const auto &present_dumps { ::crash_dump::get_present_dumps(dump_buffer) };
+    if (present_dumps.size() == 0) {
+        return;
+    }
+    if (MsgBoxWarning(_("Crash detected. Save it to USB?"
+                        "\n\nDo not share the file publicly,"
+                        " the crash dump may include unencrypted sensitive information."
+                        " Send it to: reports@prusa3d.com"),
+            Responses_YesNo)
+        == Response::Yes) {
+        auto do_stage = [&](const string_view_utf8 &msg, std::invocable<const ::crash_dump::DumpHandler *> auto fp) {
+            MsgBoxIconned box(GuiDefaults::DialogFrameRect, Responses_NONE, 0, nullptr, std::move(msg), is_multiline::yes, &img::info_58x58);
+            box.Show();
+            draw();
+            for (const auto &dump_handler : present_dumps) {
+                fp(dump_handler);
+            }
+            box.Hide();
+        };
 
-    if (event == GUI_event_t::MEDIA) {
-        switch (GuiMediaEventsHandler::state_t(int(param))) {
-        case GuiMediaEventsHandler::state_t::inserted:
+        do_stage(_("Saving to USB"), [](const ::crash_dump::DumpHandler *handler) { handler->usb_save(); });
+    }
+
+    for (const auto &dump_handler : present_dumps) {
+        dump_handler->remove();
+    }
+}
+
+void screen_home_data_t::on_enter() {
+    if (!first_event) {
+        return;
+    }
+    first_event = false;
+
+#if HAS_SELFTEST()
+    static bool first_time_check_st { true };
+    if (first_time_check_st) {
+        first_time_check_st = false;
+        if (!is_selftest_successfully_completed()) {
+            marlin_client::set_warning(WarningType::SelftestNotSuccessfullyCompleted);
+        }
+    }
+#endif
+
+#if !DEVELOPER_MODE()
+    handle_crash_dump();
+#endif
+}
+namespace {
+struct Config {
+    enum class Status { missing,
+        equal,
+        not_equal };
+
+    Status ssid_status = Status::missing;
+    Status psk_status = Status::missing;
+
+    Status get_status() {
+        if (ssid_status == Status::missing || psk_status == Status::missing) {
+            return Status::missing;
+        } else if (ssid_status == Status::not_equal || psk_status == Status::not_equal) {
+            return Status::not_equal;
+        }
+        return Status::equal;
+    }
+};
+
+int ini_handler(void *user, const char *section, const char *name, const char *value) {
+    if (user == nullptr || section == nullptr || name == nullptr || value == nullptr) {
+        return 0;
+    }
+
+    if (strcmp("wifi", section)) {
+        return 1; // do I return 0 or 1 ??? I have no clue what would 0 do.
+    }
+
+    auto *config = reinterpret_cast<Config *>(user);
+    size_t len = strlen(value);
+
+    if (strcmp(name, "ssid") == 0) {
+        char buffer[config_store_ns::old_eeprom::WIFI_MAX_SSID_LEN];
+        if (len <= sizeof(buffer)) {
+            config->ssid_status = strncmp(value, config_store().wifi_ap_ssid.get_c_str(), sizeof(buffer)) ? Config::Status::not_equal : Config::Status::equal;
+        }
+    } else if (strcmp(name, "psk") == 0) {
+        char buffer[config_store_ns::old_eeprom::WIFI_MAX_PASSWD_LEN];
+        if (len <= sizeof(buffer)) {
+            config->psk_status = strncmp(value, config_store().wifi_ap_password.get_c_str(), sizeof(buffer)) ? Config::Status::not_equal : Config::Status::equal;
+        }
+    }
+
+    return 1;
+}
+
+Config::Status name_and_psk_status() {
+    Config config;
+    bool ok = ini_parse(settings_ini::file_name, ini_handler, &config) == 0;
+    if (!ok) {
+        return Config::Status::missing;
+    }
+    return config.get_status();
+}
+} // namespace
+
+void screen_home_data_t::handle_wifi_credentials() {
+    const bool has_wifi_credentials = access(settings_ini::file_name, R_OK) == 0;
+    if (has_wifi_credentials && (name_and_psk_status() == Config::Status::not_equal) && !option::developer_mode) {
+        if (MsgBoxInfo(_("Wi-Fi credentials (SSID and password) discovered on the USB flash drive. Would you like to connect your printer to Wi-Fi now?"), Responses_YesNo, 1)
+            == Response::Yes) {
+            marlin_client::gcode("M1703 I");
+            return;
+        }
+    }
+}
+
+void screen_home_data_t::windowEvent(window_t *sender, GUI_event_t event, void *param) {
+    // TODO: This easily freezes home screen when flash action fails to start.
+    // There are several places in the code where executing a flash gcode can
+    // result in no-op and home screen stays active with events disabled.
+    if (event == GUI_event_t::MEDIA) { // Also stores during windowEvent recursion
+        media_event = MediaState_t(int(param));
+    }
+
+    if (event_in_progress) {
+        return;
+    }
+
+    AutoRestore avoid_recursion(event_in_progress, true);
+
+    on_enter();
+
+    if (media_event != MediaState_t::unknown) {
+        switch (MediaState_t(media_event)) {
+        case MediaState_t::inserted:
             if (!usbInserted) {
                 usbInserted = true;
                 printBtnEna();
                 if (!usbWasAlreadyInserted) {
-                    w_buttons[0].SetFocus(); //print button
+                    w_buttons[0].SetFocus(); // print button
                     usbWasAlreadyInserted = true;
                 }
             }
             break;
-        case GuiMediaEventsHandler::state_t::removed:
-        case GuiMediaEventsHandler::state_t::error:
+        case MediaState_t::removed:
+        case MediaState_t::error:
             if (usbInserted) {
                 usbInserted = false;
                 printBtnDis();
@@ -130,64 +468,59 @@ void screen_home_data_t::windowEvent(EventLock /*has private ctor*/, window_t *s
         default:
             break;
         }
+        media_event = MediaState_t::unknown;
     }
 
-    if (event == GUI_event_t::LOOP && GuiMediaEventsHandler::ConsumeOneClickPrinting()) {
+    if (event == GUI_event_t::LOOP) {
+        filamentBtnSetState();
 
-        // we are using marlin variables for filename and filepath buffers
-        marlin_vars_t *vars = marlin_vars();
-        //check if the variables filename and filepath are allocated
-        if (vars->media_SFN_path != nullptr && vars->media_LFN != nullptr) {
-            if (find_latest_gcode(
-                    vars->media_SFN_path,
-                    FILE_PATH_MAX_LEN,
-                    vars->media_LFN,
-                    FILE_NAME_MAX_LEN)) {
-                screen_print_preview_data_t::SetGcodeFilepath(vars->media_SFN_path);
-                screen_print_preview_data_t::SetGcodeFilename(vars->media_LFN);
-                Screens::Access()->Open(ScreenFactory::Screen<screen_print_preview_data_t>);
+#if ENABLED(POWER_PANIC)
+        if (TaskDeps::check(TaskDeps::Dependency::usb_temp_gui_ready) && !power_panic::is_power_panic_resuming())
+#endif // ENABLED(POWER_PANIC)
+        { // every time usb is inserted we check wifi credentials
+            if (usbInserted) {
+                if (need_check_wifi_credentials) {
+                    need_check_wifi_credentials = false;
+                    handle_wifi_credentials();
+                }
+            } else {
+                need_check_wifi_credentials = true; // usb is not inserted, when it gets inserted we want to recheck credentials file
             }
         }
-    }
 
-    SuperWindowEvent(sender, event, param);
-}
+#if HAS_SELFTEST()
+        if (!DialogHandler::Access().IsOpen()) {
+            if (HAS_HUMAN_INTERACTIONS() &&
+    #if ENABLED(POWER_PANIC)
+                TaskDeps::check(TaskDeps::Dependency::usb_temp_gui_ready) && !power_panic::is_power_panic_resuming() &&
+    #endif // ENABLED(POWER_PANIC)
+                GuiMediaEventsHandler::ConsumeOneClickPrinting() && !usbh_power_cycle::block_one_click_print()) {
+                // TODO this should be done in main thread before Event::MediaInserted is generated
+                // if it is not the latest gcode might not be selected
 
-static bool find_latest_gcode(char *fpath, int fpath_len, char *fname, int fname_len) {
-    DIR dir = { 0 };
-
-    FRESULT result = f_opendir(&dir, "/");
-    if (result != FR_OK) {
-        return false;
-    }
-
-    fname[0] = 0;
-    WORD latest_fdate = 0;
-    WORD latest_ftime = 0;
-    FILINFO current_finfo = { 0 };
-
-    result = f_findfirst(&dir, &current_finfo, "", "*.gcode");
-    while (result == FR_OK && current_finfo.fname[0]) {
-        bool skip = current_finfo.fattrib & AM_SYS
-            || current_finfo.fattrib & AM_HID;
-        bool is_newer = latest_fdate != current_finfo.fdate
-            ? latest_fdate < current_finfo.fdate
-            : latest_ftime < current_finfo.ftime;
-
-        if ((fname[0] == 0 || is_newer) && !skip) {
-            const char *short_name = current_finfo.altname[0] ? current_finfo.altname : current_finfo.fname;
-            fpath[0] = '/';
-            strlcpy(fpath + 1, short_name, fpath_len - 1);
-            strlcpy(fname, current_finfo.fname, fname_len);
-            latest_fdate = current_finfo.fdate;
-            latest_ftime = current_finfo.ftime;
+                std::array<char, FILE_PATH_BUFFER_LEN> filepath;
+                if (find_latest_gcode(filepath.data(), filepath.size())) {
+                    print_begin(filepath.data());
+                }
+            }
         }
-
-        result = f_findnext(&dir, &current_finfo);
+#endif // HAS_SELFTEST
     }
 
-    f_closedir(&dir);
-    return result == FR_OK && fname[0] != 0 ? true : false;
+#if !HAS_LOADCELL()
+    if (event == GUI_event_t::HELD_RELEASED) {
+        open_move_z_screen();
+        return;
+    }
+#endif
+
+    screen_t::windowEvent(sender, event, param);
+
+#if HAS_NFC()
+    // This is to handle the Preheat dialog, that is put above this screen
+    // instead of replacing it, leaving NFC enabled.
+    update_nfc_state();
+#endif
 }
 
 void screen_home_data_t::printBtnEna() {
@@ -207,4 +540,28 @@ void screen_home_data_t::printBtnDis() {
     w_buttons[0].Disable(); // cant't be focused
     w_buttons[0].Invalidate();
     w_labels[0].SetText(_(labels[labelNoUSBId]));
+}
+
+void screen_home_data_t::InitState(screen_init_variant var) {
+    if (!var.GetPosition()) {
+        return;
+    }
+
+    size_t pos = *(var.GetPosition());
+    if (pos >= button_count) {
+        return;
+    }
+
+    w_buttons[pos].SetFocus();
+}
+
+screen_init_variant screen_home_data_t::GetCurrentState() const {
+    screen_init_variant ret;
+    for (size_t i = 0; i < button_count; ++i) {
+        if (w_buttons[i].IsFocused()) {
+            ret.SetPosition(i);
+            return ret;
+        }
+    }
+    return ret;
 }

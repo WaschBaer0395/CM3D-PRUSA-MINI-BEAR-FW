@@ -40,21 +40,20 @@ struct hash_sdbm {
 /// will share the same sources (POT/PO files).
 class CPUFLASHTranslationProviderBase : public ITranslationProvider {
 public:
-    virtual ~CPUFLASHTranslationProviderBase() = default;
     /// @returns translated string
     virtual string_view_utf8 GetText(const char *key) const {
         uint16_t stringIndex = hash_table.find((const uint8_t *)key);
         if (stringIndex == 0xffff) {
             // if the translated string was not found, return the source string (assuming it is somewhere in memory, i.e. CPUFLASH or RAM)
-            return string_view_utf8::MakeCPUFLASH((const uint8_t *)key);
+            return string_view_utf8::MakeCPUFLASH(key);
         }
         const uint8_t *utf8raw = StringTableAt(stringIndex);
         return string_view_utf8::MakeCPUFLASH(utf8raw);
     }
 
     // bucket_count is being computed at compile time (lang.py is searching for the lowest possible number of buckets where collisions do not occur)
-    // 310 is the maximum total number of strings the translator array can hold. To be increased in the future as new strings come into the FW
-    using SHashTable = string_hash_table<hash_djb2, buckets_count, 310>; ///< beware of low numbers of buckets - collisions may occur unexpectedly
+    // 355 is the maximum total number of strings the translator array can hold. To be increased in the future as new strings come into the FW
+    using SHashTable = string_hash_table<hash_djb2, buckets_count, 1700>; ///< beware of low numbers of buckets - collisions may occur unexpectedly
 #ifndef TRANSLATIONS_UNITTEST
 protected:
 #endif
@@ -70,7 +69,7 @@ protected:
 
 #ifdef TRANSLATIONS_UNITTEST
     /// just accessors for raw data of derived classes for binary comparison inside unit tests
-    virtual const uint16_t *StringBegins() const = 0;
+    virtual const uint32_t *StringBegins() const = 0;
     virtual const uint8_t *Utf8Raw() const = 0;
 #endif
 };
@@ -97,7 +96,7 @@ public:
     }
 #ifdef TRANSLATIONS_UNITTEST
     /// just accessors for raw data of derived classes for binary comparison inside unit tests
-    virtual const uint16_t *StringBegins() const override { return rawData.stringBegins; }
+    virtual const uint32_t *StringBegins() const override { return rawData.stringBegins; }
     virtual const uint8_t *Utf8Raw() const override { return rawData.utf8Raw; }
 #endif
 };

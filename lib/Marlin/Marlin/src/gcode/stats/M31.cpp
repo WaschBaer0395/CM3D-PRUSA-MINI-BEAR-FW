@@ -26,11 +26,20 @@
 #include "../../libs/duration_t.h"
 #include "../../lcd/ultralcd.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M31: Get the time since the start of SD Print (or last M109)
+ *### M31: Get the time since the start of SD Print (or last M109) <a href="https://reprap.org/wiki/G-code#M31:_Output_time_since_last_M109_or_SD_card_start_to_serial">M31: Output time since last M109 or SD card start to serial</a>
+ *
+ *#### Usage
+ *
+ *    M31
+ *
  */
 void GcodeSuite::M31() {
-  char buffer[21];
+  char buffer[22];
   duration_t(print_job_timer.duration()).toString(buffer);
 
   ui.set_status(buffer);
@@ -38,3 +47,5 @@ void GcodeSuite::M31() {
   SERIAL_ECHO_START();
   SERIAL_ECHOLNPAIR("Print time: ", buffer);
 }
+
+/** @}*/

@@ -192,7 +192,9 @@
 // Prusa Research
 //
 
-#define BOARD_A3IDES_2209_02          1823  // Prusa A3ides (STM32F407VET6, TMC2209, rev02)
+#define BOARD_BUDDY_2209_02           1823  // Prusa Buddy (STM32F407VET6, TMC2209, rev02)
+#define BOARD_XLBUDDY_V1              1824  // Prusa XLBuddy
+#define BOARD_DWARF_V1                1825  // Prusa Dwarf
 
 //
 // LPC1768 ARM Cortex M3
@@ -250,13 +252,11 @@
 #define BOARD_ULTRATRONICS_PRO        3022  // ReprapWorld Ultratronics Pro V1.0
 #define BOARD_ARCHIM1                 3023  // UltiMachine Archim1 (with DRV8825 drivers)
 #define BOARD_ARCHIM2                 3024  // UltiMachine Archim2 (with TMC2130 drivers)
-#define BOARD_ALLIGATOR               3025  // Alligator Board R2
 
 //
 // SAM3X8C ARM Cortex M3
 //
 
-#define BOARD_PRINTRBOARD_G2          3100  // PRINTRBOARD G2
 #define BOARD_ADSK                    3101  // Arduino DUE Shield Kit (ADSK)
 
 //

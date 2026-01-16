@@ -28,8 +28,24 @@
 #include "../../feature/bedlevel/bedlevel.h"
 #include "../../module/probe.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M851: Set the nozzle-to-probe offsets in current units
+ *### M851: Set Z-Probe Offset <a href="https://reprap.org/wiki/G-code#M851:_Set_Z-Probe_Offset">M851: Set Z-Probe Offset</a>
+ *
+ *#### Usage
+ *
+ *    M851 [ X ]
+ *
+ *#### Parameters
+ *
+ * - `X` - Set offset on X axis
+ * - `Y` - Set offset on Y axis
+ * - `Z` - Set offset on Z axis
+ *
+ * Without parameters prints the current Probe Offset
  */
 void GcodeSuite::M851() {
 
@@ -76,5 +92,7 @@ void GcodeSuite::M851() {
   // Save the new offsets
   if (ok) probe_offset = offs;
 }
+
+/** @}*/
 
 #endif // HAS_BED_PROBE

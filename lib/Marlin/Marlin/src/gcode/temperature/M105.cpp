@@ -23,8 +23,22 @@
 #include "../gcode.h"
 #include "../../module/temperature.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M105: Read hot end and bed temperature
+ *### M105: Read hot end and bed temperature <a href="https://reprap.org/wiki/G-code#M105:_Get_Extruder_Temperature">M105: Get Extruder Temperature</a>
+ *
+ * Request a temperature report to be sent to the host as soon as possible.
+ *
+ *#### Usage
+ *
+ *    M105 [ T ]
+ *
+ *#### Parameters
+ *
+ * - `T` - Tool
  */
 void GcodeSuite::M105() {
 
@@ -35,11 +49,7 @@ void GcodeSuite::M105() {
 
   #if HAS_TEMP_SENSOR
 
-    thermalManager.print_heater_states(target_extruder
-      #if ENABLED(TEMP_SENSOR_1_AS_REDUNDANT)
-        , parser.boolval('R')
-      #endif
-    );
+    thermalManager.print_heater_states(target_extruder);
 
     SERIAL_EOL();
 
@@ -49,3 +59,5 @@ void GcodeSuite::M105() {
 
   #endif
 }
+
+/** @}*/

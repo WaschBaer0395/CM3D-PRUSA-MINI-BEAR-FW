@@ -1,179 +1,410 @@
 // window_msgbox.cpp
 #include "window_msgbox.hpp"
-#include "resource.h"
 #include "sound.hpp"
 #include <algorithm>
 #include "ScreenHandler.hpp"
-#include "dialog_response.hpp"
-#include "GuiDefaults.hpp"
+#include "client_response_texts.hpp"
+#include <guiconfig/GuiDefaults.hpp>
+#include "img_resources.hpp"
 
 /*****************************************************************************/
-// clang-format off
-const PhaseResponses Responses_NONE             = { Response::_none, Response::_none,  Response::_none,  Response::_none };
-const PhaseResponses Responses_Next             = { Response::Next,  Response::_none,  Response::_none,  Response::_none };
-const PhaseResponses Responses_Ok               = { Response::Ok,    Response::_none,  Response::_none,  Response::_none };
-const PhaseResponses Responses_OkCancel         = { Response::Ok,    Response::Cancel, Response::_none,  Response::_none };
-const PhaseResponses Responses_AbortRetryIgnore = { Response::Abort, Response::Retry,  Response::Ignore, Response::_none };
-const PhaseResponses Responses_YesNo            = { Response::Yes,   Response::No,     Response::_none,  Response::_none };
-const PhaseResponses Responses_YesNoCancel      = { Response::Yes,   Response::No,     Response::Cancel, Response::_none };
-const PhaseResponses Responses_RetryCancel      = { Response::Retry, Response::Cancel, Response::_none,  Response::_none };
-// clang-format on
-/*****************************************************************************/
+// Icon + Text layout adjusting tool
+
+void AdjustLayout(window_text_t &text, window_icon_t &icon) {
+    icon.SetAlignment(Align_t::LeftTop());
+    Rect16 new_rect = text.GetRect();
+    new_rect -= Rect16::Top_t(text.padding.top);
+    text.SetAlignment(Align_t::LeftTop());
+    text.SetRect(new_rect);
+}
 
 /*****************************************************************************/
-//MsgBoxBase
-MsgBoxBase::MsgBoxBase(Rect16 rect, const PhaseResponses *resp, size_t def_btn, const PhaseTexts *labels, string_view_utf8 txt, is_multiline multiline)
-    : AddSuperWindow<IDialog>(rect)
+// MsgBoxBase
+MsgBoxBase::MsgBoxBase(Rect16 rect, const PhaseResponses &resp, size_t def_btn, const PhaseTexts *labels, const string_view_utf8 &txt,
+    is_multiline multiline, is_closed_on_click_t close)
+    : IDialog(rect)
     , text(this, getTextRect(), multiline, is_closed_on_click_t::no, txt)
-    , buttons(this, get_radio_button_rect(rect), resp, labels)
     , result(Response::_none) {
-    buttons.SetBtnIndex(def_btn);
-    //text.SetAlignment(ALIGN_CENTER);
-    //buttons.SetCapture(); //todo make this work
+    flags.close_on_click = close;
+    static_assert(sizeof(RadioButton) <= std::tuple_size_v<RadioMemSpace>);
+    pButtons = make_static_unique_ptr<RadioButton>(&radio_mem_space, this, GuiDefaults::GetButtonRect(rect), resp, labels);
+    pButtons->SetBtnIndex(def_btn);
+    CaptureNormalWindow(*pButtons);
 }
 
 Rect16 MsgBoxBase::getTextRect() {
-    return rect - get_radio_button_rect(rect).Height();
-}
-
-Response MsgBoxBase::GetResult() {
-    return result;
-}
-
-//todo make radio button events behave like normal button
-void MsgBoxBase::windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) {
-    switch (event) {
-    case GUI_event_t::CLICK:
-        result = buttons.Click();
-        Screens::Access()->Close();
-        break;
-    case GUI_event_t::ENC_UP:
-        ++buttons;
-        gui_invalidate();
-        break;
-    case GUI_event_t::ENC_DN:
-        --buttons;
-        gui_invalidate();
-        break;
-    default:
-        SuperWindowEvent(sender, event, param);
+    if (GuiDefaults::EnableDialogBigLayout) {
+        return GuiDefaults::MsgBoxLayoutRect;
+    } else {
+        return GetRect() - GuiDefaults::GetButtonRect(GetRect()).Height();
     }
 }
 
+void MsgBoxBase::BindToFSM(FSMAndPhase phase) {
+    using T = RadioButtonFSM;
+    static_assert(sizeof(T) <= mem_space_size, "RadioMemSpace is too small");
+
+    if (!pButtons) { // pButtons can never be null
+        assert("unassigned msgbox");
+        return;
+    }
+
+    Rect16 rc = pButtons->GetRect();
+    bool has_icon = pButtons->HasIcon();
+    Color back = pButtons->GetBackColor();
+
+    ReleaseCaptureOfNormalWindow();
+
+    // First reset, then create new class; we cannot afford constructing and then destructing because it's the same memory
+    pButtons.reset();
+    static_assert(sizeof(T) <= std::tuple_size_v<RadioMemSpace>);
+    pButtons = make_static_unique_ptr<T>(radio_mem_space.data(), this, rc, phase);
+
+    has_icon ? pButtons->SetHasIcon() : pButtons->ClrHasIcon();
+    pButtons->SetBackColor(back);
+
+    CaptureNormalWindow(*pButtons);
+}
+
+void MsgBoxBase::generate_response(Response r) {
+    result = r;
+
+    if (flags.close_on_click == is_closed_on_click_t::yes) {
+        Screens::Access()->Close();
+    } else if (GetParent()) {
+        GetParent()->WindowEvent(this, GUI_event_t::CHILD_CLICK, event_conversion_union { .response = r }.pvoid);
+    }
+}
+
+void MsgBoxBase::set_text_alignment(Align_t alignment) {
+    text.SetAlignment(alignment);
+}
+
+void MsgBoxBase::set_text_font(Font font) {
+    text.set_font(font);
+}
+
+void MsgBoxBase::windowEvent(window_t *sender, GUI_event_t event, void *param) {
+    switch (event) {
+
+    case GUI_event_t::CHILD_CLICK: {
+        generate_response(event_conversion_union { .pvoid = param }.response);
+        return;
+    }
+
+    case GUI_event_t::TOUCH_SWIPE_LEFT:
+    case GUI_event_t::TOUCH_SWIPE_RIGHT:
+        if (flags.close_on_click == is_closed_on_click_t::yes && pButtons->GetBtnCount() == 0) {
+            Screens::Access()->Close();
+            return;
+        }
+        break;
+
+    default:
+        break;
+    }
+
+    IDialog::windowEvent(sender, event, param);
+}
+
+static constexpr Font TitleFont = GuiDefaults::FontBig;
+
 /*****************************************************************************/
-//MsgBoxTitled
-MsgBoxTitled::MsgBoxTitled(Rect16 rect, const PhaseResponses *resp, size_t def_btn, const PhaseTexts *labels,
-    string_view_utf8 txt, is_multiline multiline, string_view_utf8 tit, uint16_t title_icon_id_res)
-    : AddSuperWindow<MsgBoxBase>(rect, resp, def_btn, labels, txt, multiline)
-    , title_icon(this, title_icon_id_res, { rect.Left(), rect.Top() }, GuiDefaults::Padding)
-    , title(this, getTitleRect(), is_multiline::no, is_closed_on_click_t::no, tit) {
-    text.rect = getTitledTextRect(); // reinit text, icon and title must be initialized
-    title.font = getTitleFont();
-    title.SetPadding({ 0, 0, 0, 0 });
+// MsgBoxTitled
+MsgBoxTitled::MsgBoxTitled(Rect16 rect, const PhaseResponses &resp, size_t def_btn, const PhaseTexts *labels,
+    const string_view_utf8 &txt, is_multiline multiline, const string_view_utf8 &tit, const img::Resource *title_icon, is_closed_on_click_t close, dense_t dense)
+    : MsgBoxIconned(rect, resp, def_btn, labels, txt, multiline, title_icon, close)
+    , title(this, GetRect(), is_multiline::no, is_closed_on_click_t::no, tit) {
+    title.set_font(TitleFont);
+    title.SetRect(getTitleRect());
+    icon.SetRect(getIconRect());
+    text.SetRect(getTextRect());
+    if (dense == dense_t::yes) {
+        set_text_font(GuiDefaults::FontMenuSpecial);
+    }
+}
+
+void MsgBoxTitled::set_title_alignment(Align_t alignment) {
+    title.SetAlignment(alignment);
 }
 
 Rect16 MsgBoxTitled::getTitleRect() {
-    Rect16 title_rect;
-    if (!title_icon.rect.IsEmpty()) {
-        title_rect = title_icon.rect;                          // Y, H is valid
-        title_rect += Rect16::Left_t(title_icon.rect.Width()); // fix X
+    const auto shared_top = GetRect().Top() + 1; /* Visual delimeter */
+    const auto shared_height = Rect16::Height_t(height(TitleFont));
+    if (icon.IsIconValid()) {
+        return Rect16(Rect16::Left_t(MsgBoxTitled::TextPadding.left + GuiDefaults::FooterIconSize.w + MsgBoxTitled::IconTitleDelimeter),
+            shared_top,
+            Rect16::Width_t(Width() - (MsgBoxTitled::TextPadding.left + MsgBoxTitled::TextPadding.right + GuiDefaults::FooterIconSize.w + MsgBoxTitled::IconTitleDelimeter)),
+            shared_height);
     } else {
-        title_rect = rect;                                // X, Y is valid
-        title_rect = Rect16::Height_t(getTitleFont()->h); // fix H
+        return Rect16(
+            Rect16::Left_t(MsgBoxTitled::TextPadding.left),
+            shared_top,
+            Rect16::Width_t(Width() - (MsgBoxTitled::TextPadding.left + MsgBoxTitled::TextPadding.right)),
+            shared_height);
     }
-    //now just need to calculate W
-    title_rect = Rect16::Width_t(rect.Left() + rect.Width() - title_rect.Left());
-    return title_rect;
 }
 
-Rect16 MsgBoxTitled::getTitledTextRect() {
-    Rect16 text_rect = rect;
-    text_rect -= getTitleRect().Height();
-    text_rect -= Rect16::Height_t(4); // atleast 1px red line and 1px space after red line
-    text_rect -= get_radio_button_rect(rect).Height();
+Rect16 MsgBoxTitled::getLineRect() {
+    const auto title_rect { getTitleRect() };
+    return Rect16(GetRect().Left(), title_rect.EndPoint().y + 2 /* Visual delimeter */, GetRect().Width(), 1);
+}
 
-    text_rect += Rect16::Top_t(getTitleRect().Height());
-    text_rect += Rect16::Top_t(4); // atleast 1px red line and 1px space after red line
+Rect16 MsgBoxTitled::getTextRect() {
+    Rect16 text_rect = GetRect();
+    uint16_t y = getLineRect().EndPoint().y;
+
+    text_rect -= Rect16::Height_t(y - text_rect.Top());
+    text_rect -= GuiDefaults::GetButtonRect(GetRect()).Height();
+
+    text_rect = Rect16::Top_t(y);
+
+    text_rect.CutPadding(MsgBoxTitled::TextPadding);
+
     return text_rect;
 }
 
-font_t *MsgBoxTitled::getTitleFont() {
-    return GuiDefaults::FontBig;
-}
-
-void MsgBoxTitled::unconditionalDraw() {
-    MsgBoxBase::unconditionalDraw();
-    Rect16 rc = getTitledTextRect();
-
-    display::DrawLine(point_ui16(rc.Left() + title.padding.left, rc.Top() - 1),
-        point_ui16(rc.Width() - 2 * (title.padding.left + title.padding.right), rc.Top() - 1),
-        COLOR_RED_ALERT);
+Rect16 MsgBoxTitled::getIconRect() {
+    return Rect16(GetRect().Left() + MsgBoxTitled::TextPadding.left, GetRect().Top() + 3 /* Visual delimeter */, GuiDefaults::FooterIconSize.w, GuiDefaults::FooterIconSize.h);
 }
 
 /*****************************************************************************/
-//MsgBoxIconned
-MsgBoxIconned::MsgBoxIconned(Rect16 rect, const PhaseResponses *resp, size_t def_btn, const PhaseTexts *labels,
-    string_view_utf8 txt, is_multiline multiline, uint16_t icon_id_res)
-    : AddSuperWindow<MsgBoxBase>(rect, resp, def_btn, labels, txt, multiline)
-    , icon(this, icon_id_res, { int16_t(rect.Left()), int16_t(rect.Top()) }, GuiDefaults::Padding) {
-    text.rect = getIconnedTextRect(); // reinit text, icon and title must be initialized
-    icon.rect -= Rect16::Width_t(GuiDefaults::Padding.left + GuiDefaults::Padding.right);
-    icon.rect += Rect16::Left_t((rect.Width() / 2) - (icon.rect.Width() / 2)); // center icon
+// MsgBoxIconned
+MsgBoxIconned::MsgBoxIconned(Rect16 rect, const PhaseResponses &resp, size_t def_btn, const PhaseTexts *labels,
+    const string_view_utf8 &txt, is_multiline multiline, const img::Resource *icon_res, is_closed_on_click_t close)
+    : MsgBoxBase(rect, resp, def_btn, labels, txt, multiline, close)
+    , icon(this, icon_res, { int16_t(rect.Left()), int16_t(rect.Top()) }, GuiDefaults::Padding) {
+    text.SetRect(getTextRect()); // reinit text, icon and title must be initialized
+    if (GuiDefaults::EnableDialogBigLayout) {
+        text.SetAlignment(Align_t::LeftCenter());
+        if (icon_res) {
+            icon.SetRect(getIconRect());
+        }
+        AdjustLayout(text, icon);
+    } else {
+        icon -= Rect16::Width_t(GuiDefaults::Padding.left + GuiDefaults::Padding.right);
+        icon += Rect16::Left_t((Width() / 2) - (icon.Width() / 2)); // center icon
+    }
 }
 
-Rect16 MsgBoxIconned::getIconnedTextRect() {
-    Rect16 text_rect = rect;
-    text_rect -= icon.rect.Height();
-    text_rect -= get_radio_button_rect(rect).Height();
+Rect16 MsgBoxIconned::getIconRect() {
+    return GuiDefaults::MessageIconRect;
+}
 
-    text_rect += Rect16::Top_t(icon.rect.Height());
-    return text_rect;
+Rect16 MsgBoxIconned::getTextRect() {
+    if (GuiDefaults::EnableDialogBigLayout) {
+        return GuiDefaults::MessageTextRect;
+    } else {
+        Rect16 text_rect = GetRect();
+        text_rect -= icon.Height();
+        text_rect -= GuiDefaults::GetButtonRect(GetRect()).Height();
+
+        text_rect += Rect16::Top_t(icon.Height());
+        return text_rect;
+    }
 }
 
 /*****************************************************************************/
-//MsgBoxBase variadic template methods
-//to be used as blocking functions
-template <class T, typename... Args>
-Response MsgBox_Custom(Rect16 rect, const PhaseResponses &resp, size_t def_btn, string_view_utf8 txt, is_multiline multiline, Args... args) {
-    const PhaseTexts labels = { BtnTexts::Get(resp[0]), BtnTexts::Get(resp[1]), BtnTexts::Get(resp[2]), BtnTexts::Get(resp[3]) };
-    //static_assert(labels.size() == 4, "Incorrect array size, modify number of elements");
-    T msgbox(rect, &resp, def_btn, &labels, txt, multiline, args...);
-    msgbox.MakeBlocking();
-    return msgbox.GetResult();
+// MsgBoxIconPepaCentered
+MsgBoxIconPepaCentered::MsgBoxIconPepaCentered(Rect16 rect, const PhaseResponses &resp, size_t def_btn, const PhaseTexts *labels,
+    const string_view_utf8 &txt, is_multiline multiline, const img::Resource *ic)
+    : MsgBoxIconned(rect, resp, def_btn, labels, txt, multiline, ic) {
+    icon.SetRect(getIconRect());
+    icon.SetAlignment(Align_t::CenterTop());
+
+    text.SetRect(getTextRect());
+    text.SetAlignment(Align_t::Center());
 }
 
-Response MsgBox(string_view_utf8 txt, const PhaseResponses &resp, size_t def_btn, Rect16 rect, is_multiline multiline) {
-    return MsgBox_Custom<MsgBoxBase>(rect, resp, def_btn, txt, multiline);
+Rect16 MsgBoxIconPepaCentered::getTextRect() {
+    return Rect16(10, GuiDefaults::HeaderHeight + 147, GuiDefaults::ScreenWidth - 10, 23 * 4);
 }
 
-Response MsgBoxError(string_view_utf8 txt, const PhaseResponses &resp, size_t def_btn, Rect16 rect, is_multiline multiline) {
-    constexpr static const char *label = N_("Error");
-    return MsgBox_Custom<MsgBoxTitled>(rect, resp, def_btn, txt, multiline, _(label), IDR_PNG_error_16px);
+Rect16 MsgBoxIconPepaCentered::getIconRect() {
+    return Rect16(0, GuiDefaults::HeaderHeight, GuiDefaults::ScreenWidth, 140);
 }
 
-Response MsgBoxQuestion(string_view_utf8 txt, const PhaseResponses &resp, size_t def_btn, Rect16 rect, is_multiline multiline) {
-    constexpr static const char *label = N_("Question");
-    return MsgBox_Custom<MsgBoxTitled>(rect, resp, def_btn, txt, multiline, _(label), IDR_PNG_question_16px);
+/*****************************************************************************/
+// MsgBoxIconnedError
+MsgBoxIconnedError::MsgBoxIconnedError(Rect16 rect, const PhaseResponses &resp, size_t def_btn, const PhaseTexts *labels, const string_view_utf8 &txt, is_multiline multiline, const img::Resource *icon_res)
+    : MsgBoxIconned(rect, resp, def_btn, labels, txt, multiline, icon_res) {
+    SetRoundCorners();
+    text.SetRect(getTextRect()); // reinit text, icon and title must be initialized
+    text.SetAlignment(Align_t::LeftCenter());
+    icon.SetRect(getIconRect());
+    AdjustLayout(text, icon);
+    SetBackColor(COLOR_ORANGE);
+    text.SetBackColor(COLOR_ORANGE);
+    icon.SetBackColor(COLOR_ORANGE);
+
+    if (!pButtons) { // pButtons can never be null
+        assert("unassigned msgbox");
+        return;
+    }
+
+    pButtons->SetBackColor(COLOR_WHITE);
 }
 
-Response MsgBoxWarning(string_view_utf8 txt, const PhaseResponses &resp, size_t def_btn, Rect16 rect, is_multiline multiline) {
-    constexpr static const char *label = N_("Warning");
-    return MsgBox_Custom<MsgBoxTitled>(rect, resp, def_btn, txt, multiline, _(label), IDR_PNG_warning_16px);
+/*****************************************************************************/
+// MsgBoxIconnedWait
+MsgBoxIconnedWait::MsgBoxIconnedWait(Rect16 rect, const PhaseResponses &resp, size_t def_btn, const PhaseTexts *labels,
+    const string_view_utf8 &txt, is_multiline multiline)
+    : MsgBoxIconned(rect, resp, def_btn, labels, txt, multiline, &img::hourglass_26x39) {
+    icon.SetRect(Rect16(0, GuiDefaults::HeaderHeight, GuiDefaults::ScreenWidth, 140));
+    icon.SetAlignment(Align_t::Center());
+
+    text.SetRect(Rect16(10, GuiDefaults::HeaderHeight + 147, GuiDefaults::ScreenWidth - 10, 23 * 4));
+    text.SetAlignment(Align_t::Center());
 }
 
-Response MsgBoxTitle(string_view_utf8 title, string_view_utf8 txt, const PhaseResponses &resp, size_t def_btn, Rect16 rect, uint16_t icon_id, is_multiline multiline) {
-    return MsgBox_Custom<MsgBoxTitled>(rect, resp, def_btn, txt, multiline, title, icon_id);
+/*****************************************************************************/
+namespace {
+
+enum class MsgBoxDialogClass {
+    MsgBoxBase,
+    MsgBoxTitled,
+    MsgBoxIconned,
+    MsgBoxIconnedError,
+    MsgBoxIconPepaCentered,
+    _count,
+};
+
+struct MsgBoxImplicitConfig {
+    MsgBoxDialogClass dialog_class;
+    const img::Resource *icon = nullptr;
+    const char *title = nullptr;
+};
+
+constexpr bool big_layout = GuiDefaults::EnableDialogBigLayout;
+
+constexpr const char *nullstr = nullptr;
+
+constexpr EnumArray<MsgBoxType, MsgBoxImplicitConfig, MsgBoxType::_count> msb_box_implicit_configs {
+    {
+        MsgBoxType::standard,
+        MsgBoxImplicitConfig {
+            .dialog_class = MsgBoxDialogClass::MsgBoxBase,
+        },
+    },
+    {
+        MsgBoxType::titled,
+        MsgBoxImplicitConfig {
+            .dialog_class = MsgBoxDialogClass::MsgBoxTitled,
+        },
+    },
+    {
+        MsgBoxType::error,
+        MsgBoxImplicitConfig {
+            .dialog_class = big_layout ? MsgBoxDialogClass::MsgBoxIconnedError : MsgBoxDialogClass::MsgBoxTitled,
+            .icon = big_layout ? &img::error_white_48x48 : &img::error_16x16,
+            .title = big_layout ? nullstr : N_("Error"),
+        },
+    },
+    {
+        MsgBoxType::question,
+        MsgBoxImplicitConfig {
+            .dialog_class = big_layout ? MsgBoxDialogClass::MsgBoxIconned : MsgBoxDialogClass::MsgBoxTitled,
+            .icon = big_layout ? &img::question_48x48 : &img::question_16x16,
+            .title = big_layout ? nullstr : N_("Question"),
+        },
+    },
+    {
+        MsgBoxType::warning,
+        MsgBoxImplicitConfig {
+            .dialog_class = big_layout ? MsgBoxDialogClass::MsgBoxIconned : MsgBoxDialogClass::MsgBoxTitled,
+            .icon = big_layout ? &img::warning_48x48 : &img::warning_16x16,
+            .title = big_layout ? nullstr : N_("Warning"),
+        },
+    },
+    {
+        MsgBoxType::info,
+        MsgBoxImplicitConfig {
+            .dialog_class = big_layout ? MsgBoxDialogClass::MsgBoxIconned : MsgBoxDialogClass::MsgBoxTitled,
+            .icon = big_layout ? &img::info_48x48 : &img::info_16x16,
+            .title = big_layout ? nullstr : N_("Information"),
+        },
+    },
+    {
+        MsgBoxType::pepa_centered,
+        MsgBoxImplicitConfig {
+            .dialog_class = MsgBoxDialogClass::MsgBoxIconPepaCentered,
+            .icon = big_layout ? &img::pepa_92x140 : &img::pepa_42x64,
+        },
+    },
+};
+
+} // namespace
+
+Response MsgBoxBuilder::exec() const {
+    const MsgBoxImplicitConfig &implicit_config = msb_box_implicit_configs[static_cast<size_t>(type)];
+    const img::Resource *used_icon = icon ?: implicit_config.icon;
+    const string_view_utf8 used_title = title.isNULLSTR() ? _(implicit_config.title) : title;
+
+    const PhaseTexts labels = {
+        get_response_text(responses[0]),
+        get_response_text(responses[1]),
+        get_response_text(responses[2]),
+        get_response_text(responses[3]),
+    };
+
+    const auto box_f = [&]<typename T, MsgBoxDialogClass CS = MsgBoxDialogClass::_count, typename... Args>(Args... args) {
+        T msgbox(rect, responses, static_cast<size_t>(default_button), &labels, text, multiline, args...);
+        Screens::Access()->gui_loop_until_dialog_closed(loop_callback);
+        return msgbox.GetResult();
+    };
+
+    switch (implicit_config.dialog_class) {
+
+    case MsgBoxDialogClass::MsgBoxBase:
+        return box_f.operator()<MsgBoxBase>();
+
+    case MsgBoxDialogClass::MsgBoxTitled:
+        return box_f.operator()<MsgBoxTitled>(used_title, used_icon);
+
+    case MsgBoxDialogClass::MsgBoxIconned:
+        return box_f.operator()<MsgBoxIconned>(used_icon);
+
+    case MsgBoxDialogClass::MsgBoxIconnedError:
+        return box_f.operator()<MsgBoxIconnedError>(used_icon);
+
+    case MsgBoxDialogClass::MsgBoxIconPepaCentered:
+        return box_f.operator()<MsgBoxIconPepaCentered>(used_icon);
+
+    default:
+        bsod("Invalid MsgBoxDialogClass");
+    }
 }
 
-Response MsgBoxInfo(string_view_utf8 txt, const PhaseResponses &resp, size_t def_btn, Rect16 rect, is_multiline multiline) {
-    constexpr static const char *label = N_("Information");
-    return MsgBox_Custom<MsgBoxTitled>(rect, resp, def_btn, txt, multiline, _(label), IDR_PNG_info_16px);
+Response msg_box(MsgBoxType type, const string_view_utf8 &txt, const PhaseResponses &resp, MsgBoxDefaultButton default_button) {
+    return MsgBoxBuilder {
+        .type = type,
+        .text = txt,
+        .responses = resp,
+        .default_button = default_button,
+    }
+        .exec();
 }
 
-Response MsgBoxIcon(string_view_utf8 txt, uint16_t icon_id, const PhaseResponses &resp, size_t def_btn, Rect16 rect, is_multiline multiline) {
-    return MsgBox_Custom<MsgBoxIconned>(rect, resp, def_btn, txt, multiline, icon_id);
+Response MsgBox(const string_view_utf8 &txt, const PhaseResponses &resp, size_t def_btn) {
+    return msg_box(MsgBoxType::standard, txt, resp, static_cast<MsgBoxDefaultButton>(def_btn));
 }
 
-Response MsgBoxPepa(string_view_utf8 txt, const PhaseResponses &resp, size_t def_btn, Rect16 rect, is_multiline multiline) {
-    return MsgBoxIcon(txt, IDR_PNG_pepa_64px, resp, def_btn, rect, multiline);
+Response MsgBoxError(const string_view_utf8 &txt, const PhaseResponses &resp, size_t def_btn) {
+    return msg_box(MsgBoxType::error, txt, resp, static_cast<MsgBoxDefaultButton>(def_btn));
+}
+
+Response MsgBoxQuestion(const string_view_utf8 &txt, const PhaseResponses &resp, size_t def_btn) {
+    return msg_box(MsgBoxType::question, txt, resp, static_cast<MsgBoxDefaultButton>(def_btn));
+}
+
+Response MsgBoxWarning(const string_view_utf8 &txt, const PhaseResponses &resp, size_t def_btn) {
+    return msg_box(MsgBoxType::warning, txt, resp, static_cast<MsgBoxDefaultButton>(def_btn));
+}
+
+Response MsgBoxInfo(const string_view_utf8 &txt, const PhaseResponses &resp, size_t def_btn) {
+    return msg_box(MsgBoxType::info, txt, resp, static_cast<MsgBoxDefaultButton>(def_btn));
+}
+
+Response MsgBoxPepaCentered(const string_view_utf8 &txt, const PhaseResponses &resp, size_t def_btn) {
+    return msg_box(MsgBoxType::pepa_centered, txt, resp, static_cast<MsgBoxDefaultButton>(def_btn));
 }

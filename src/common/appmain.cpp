@@ -1,206 +1,220 @@
-//appmain.cpp - arduino-like app start
-
 #include "appmain.hpp"
-#include "app.h"
+
 #include "app_metrics.h"
-#include "dbg.h"
+#include <logging/log.hpp>
 #include "cmsis_os.h"
 #include "config.h"
-#include "dbg.h"
-#include "adc.h"
-#include "Jogwheel.hpp"
+#include "adc.hpp"
+#include <option/has_gui.h>
+#if HAS_GUI()
+    #include "Jogwheel.hpp"
+#endif
 #include "hwio.h"
-#include "sys.h"
 #include "gpio.h"
+#include "metric.h"
+#include "cpu_utils.hpp"
 #include "sound.hpp"
 #include "language_eeprom.hpp"
-#include "usbd_cdc_if.h"
+#include <device/board.h>
+#include <buddy/usb_device.hpp>
 
-#ifdef SIM_HEATER
-    #include "sim_heater.h"
-#endif //SIM_HEATER
+#include <option/has_advanced_power.h>
+#if HAS_ADVANCED_POWER()
+    #include "advanced_power.hpp"
+#endif // HAS_ADVANCED_POWER()
 
-#ifdef SIM_MOTION
-    #include "sim_motion.h"
-#endif //SIM_MOTION
-
-#include "uartslave.h"
-#include "marlin_server.h"
+#include "marlin_server.hpp"
 #include "bsod.h"
-#include "eeprom.h"
-#include "diag.h"
 #include "safe_state.h"
 #include "crc32.h"
-#include "ff.h"
-#include "dump.h"
-
+#include <crash_dump/dump.hpp>
+#include "hwio_pindef.h"
 #include <Arduino.h>
-#include "trinamic.h"
 #include "../Marlin/src/module/configuration_store.h"
+#include <buddy/main.h>
+#include <stdint.h>
+#include "fanctl.hpp"
+#include "printers.h"
+#include "MarlinPin.h"
+#include "timing.h"
+#include "tasks.hpp"
+#include "Marlin/src/module/planner.h"
+#include <option/filament_sensor.h>
 
-#ifdef NEW_FANCTL
-    #include "fanctl.h"
-CFanCtl fanctl0 = CFanCtl(
-    buddy::hw::fan0pwm,
-    buddy::hw::fan0tach,
-    FANCTL0_PWM_MIN, FANCTL0_PWM_MAX,
-    FANCTL0_RPM_MIN, FANCTL0_RPM_MAX,
-    FANCTL0_PWM_THR,
-    is_autofan_t::no);
-CFanCtl fanctl1 = CFanCtl(
-    buddy::hw::fan1pwm,
-    buddy::hw::fan1tach,
-    FANCTL1_PWM_MIN, FANCTL1_PWM_MAX,
-    FANCTL1_RPM_MIN, FANCTL1_RPM_MAX,
-    FANCTL1_PWM_THR,
-    is_autofan_t::yes);
-#endif //NEW_FANCTL
+#include <option/has_usb_device.h>
+#if HAS_USB_DEVICE()
+    #include <tusb.h>
+#endif
 
-#define DBG _dbg0 //debug level 0
-//#define DBG(...)  //disable debug
+#if BOARD_IS_XLBUDDY()
+    #include <puppies/Dwarf.hpp>
+    #include <Marlin/src/module/prusa/toolchanger.h>
+    #include <filament_sensors_handler.hpp>
+    #include <filament_sensors_handler_XL_remap.hpp>
+#endif
 
-extern void USBSerial_put_rx_data(uint8_t *buffer, uint32_t length);
-extern void app_cdc_rx(uint8_t *buffer, uint32_t length);
+#include <option/has_loadcell.h>
+#if HAS_LOADCELL()
+    #include "loadcell.hpp"
+    #include "feature/prusa/e-stall_detector.h"
+#endif
 
-extern void reset_trinamic_drivers();
+#include <option/has_loadcell_hx717.h>
+#if HAS_LOADCELL_HX717()
+    #include "hx717mux.hpp"
+#endif
 
-extern "C" {
+#include <option/has_touch.h>
+#if HAS_TOUCH()
+    #include <hw/touchscreen/touchscreen.hpp>
+#endif
 
-extern uartrxbuff_t uart6rxbuff; // PUT rx buffer
-extern uartslave_t uart6slave;   // PUT slave
+LOG_COMPONENT_REF(MMU2);
+LOG_COMPONENT_REF(Marlin);
 
-#ifdef BUDDY_ENABLE_ETHERNET
-extern osThreadId webServerTaskHandle; // Webserver thread(used for fast boot mode)
-#endif                                 //BUDDY_ENABLE_ETHERNET
+#if ENABLED(POWER_PANIC)
+    #include "power_panic.hpp"
+#endif
 
-void app_setup(void) {
-    if (INIT_TRINAMIC_FROM_MARLIN_ONLY == 0) {
-        init_tmc();
+#include <option/has_emergency_stop.h>
+#if HAS_EMERGENCY_STOP()
+    #include <feature/emergency_stop/emergency_stop.hpp>
+#endif
+
+#include "probe_position_lookback.hpp"
+#include <config_store/store_instance.hpp>
+
+LOG_COMPONENT_DEF(Buddy, logging::Severity::debug);
+LOG_COMPONENT_DEF(Core, logging::Severity::info);
+LOG_COMPONENT_DEF(MMU2, logging::Severity::info);
+
+METRIC_DEF(metric_app_start, "app_start", METRIC_VALUE_EVENT, 0, METRIC_ENABLED);
+METRIC_DEF(metric_maintask_event, "maintask_loop", METRIC_VALUE_EVENT, 0, METRIC_DISABLED);
+METRIC_DEF(metric_cpu_usage, "cpu_usage", METRIC_VALUE_INTEGER, 1000, METRIC_ENABLED);
+
+void app_marlin_serial_output_write_hook(const uint8_t *buffer, int size) {
+    while (size && (buffer[size - 1] == '\n' || buffer[size - 1] == '\r')) {
+        size--;
+    }
+    logging::Severity severity = logging::Severity::info;
+    bool MMU = false;
+    if (size == 2 && memcmp("ok", buffer, 2) == 0) {
+        // Do not log "ok" messages
+        return;
+    } else if (size >= 10 && memcmp("echo:MMU2:", buffer, 10) == 0) { //@@TODO this is ugly and suboptimal
+        buffer = buffer + 10;
+        size -= 10;
+        MMU = true;
+    } else if (size >= 5 && memcmp("echo:", buffer, 5) == 0) {
+        buffer = buffer + 5;
+        size -= 5;
+    } else if (size >= 11 && memcmp("Error:MMU2:", buffer, 11) == 0) { //@@TODO this is ugly and suboptimal
+        buffer = buffer + 11;
+        size -= 11;
+        severity = logging::Severity::error;
+        MMU = true;
+    } else if (size >= 6 && memcmp("Error:", buffer, 6) == 0) {
+        buffer = buffer + 6;
+        size -= 6;
+        severity = logging::Severity::error;
+    }
+    if (MMU) {
+        log_event(severity, MMU2, "%.*s", size, buffer);
     } else {
-        init_tmc_bare_minimum();
+        log_event(severity, Marlin, "%.*s", size, buffer);
+    }
+}
+
+#if HAS_USB_DEVICE()
+static void app_setup_marlin_logging() {
+    SerialUSB.lineBufferHook = app_marlin_serial_output_write_hook;
+}
+
+static void wait_for_serial() {
+    // wait for usb thread to be ready, then continue waiting only if something was seen
+    TaskDeps::wait(TaskDeps::Tasks::usb_device_start);
+    if (!usb_device_seen()) {
+        return;
     }
 
-    // enable cdc
-    usbd_cdc_register_receive_fn(app_cdc_rx);
+    // If a device was seen, keep trying to connect irregardless of the current connection state, as
+    // a re-negotiation could temporarily break out of this loop a cause messages to be lost
+    log_info(Buddy, "device seen: waiting for serial");
+    uint32_t start_ts = ticks_ms();
+    while (ticks_diff(ticks_ms(), start_ts) < 3000) {
+        if (tud_cdc_n_connected(0)) {
+            log_info(Buddy, "serial successfully attached");
+            break;
+        }
+        osDelay(10);
+    }
+}
+#endif
+
+#if HAS_TOUCH()
+extern "C" void touchscreen_timer_callback(TimerHandle_t) {
+    if (touchscreen.is_enabled()) {
+        touchscreen.update();
+    }
+}
+
+static StaticTimer_t touchscreen_timer_buffer;
+static auto touchscreen_timer = xTimerCreateStatic("touchscreen", pdMS_TO_TICKS(1), pdTRUE, 0, touchscreen_timer_callback, &touchscreen_timer_buffer);
+#endif
+
+static void app_startup() {
+#if HAS_USB_DEVICE()
+    // Attempt to wait for CDC to initialize to get the full Marlin startup output
+    wait_for_serial();
+
+    // Finally link SerialUSB/marlin
+    app_setup_marlin_logging();
+#endif
+
+    log_info(Buddy, "marlin task waiting for dependencies");
+    TaskDeps::wait(TaskDeps::Tasks::default_start);
+    log_info(Buddy, "marlin task is starting");
+}
+
+static void app_setup(void) {
+    metric_record_event(&metric_app_start);
+
+#if HAS_LOADCELL()
+    if (config_store().stuck_filament_detection.get()) {
+        EMotorStallDetector::Instance().SetEnabled();
+    } // else keep it disabled (which is the default)
+
+    #if HAS_LOADCELL_HX717()
+    buddy::hw::hx717mux.init();
+    #endif
+#endif
 
     setup();
-
-    marlin_server_settings_load(); // load marlin variables from eeprom
-    //DBG("after init_tmc (%ld ms)", HAL_GetTick());
 }
-
-void app_idle(void) {
-    Buddy::Metrics::RecordMarlinVariables();
-    Buddy::Metrics::RecordRuntimeStats();
-    Buddy::Metrics::RecordPrintFilename();
-    osDelay(0); // switch to other threads - without this is UI slow during printing
-}
-// a dummy comment just to bump the build nr. one higher to avoid user confusion
 
 void app_run(void) {
-    DBG("app_run");
+    app_startup();
 
-#ifdef BUDDY_ENABLE_ETHERNET
-    if (diag_fastboot)
-        osThreadResume(webServerTaskHandle);
-#endif //BUDDY_ENABLE_ETHERNET
-
+#if HAS_GUI()
     LangEEPROM::getInstance();
+    Translations::Instance().gettext_hook = []([[maybe_unused]] const char *f) {
+        assert(IS_FLASH_ADDRESS(reinterpret_cast<uintptr_t>(f)));
+    };
+#endif
 
-    marlin_server_init();
-    marlin_server_idle_cb = app_idle;
+    app_setup();
+    marlin_server::init();
 
-    adc_init();
+    TaskDeps::provide(TaskDeps::Dependency::default_task_ready);
 
-#ifdef SIM_HEATER
-    sim_heater_init();
-#endif //SIM_HEATER
-
-    //DBG("before setup (%ld ms)", HAL_GetTick());
-    if (diag_fastboot || (!sys_fw_is_valid())) {
-        if (!sys_fw_is_valid()) // following code will be done only with invalidated firmware
-        {
-            hwio_safe_state(); // safe states
-            for (int i = 0; i < hwio_fan_get_cnt(); ++i)
-                hwio_fan_set_pwm(i, 0); // disable fans
-        }
-        if (INIT_TRINAMIC_FROM_MARLIN_ONLY == 0) {
-            init_tmc();
-        }
-        reset_trinamic_drivers();
-    } else {
-        app_setup();
-        marlin_server_start_processing();
-    }
-    //DBG("after setup (%ld ms)", HAL_GetTick());
-
-    if (eeprom_init() == EEPROM_INIT_Defaults && marlin_server_processing()) {
-        settings.reset();
-    }
+#if HAS_TOUCH()
+    xTimerStart(touchscreen_timer, portMAX_DELAY);
+#endif
 
     while (1) {
-        if (marlin_server_processing()) {
-            loop();
-        }
-        uartslave_cycle(&uart6slave);
-        marlin_server_loop();
-        osDelay(0); // switch to other threads - without this is UI slow
-#ifdef JOGWHEEL_TRACE
-        static int signals = jogwheel_signals;
-        if (signals != jogwheel_signals) {
-            signals = jogwheel_signals;
-            DBG("%d %d", signals, jogwheel_encoder);
-        }
-#endif //JOGWHEEL_TRACE
-#ifdef SIM_MOTION_TRACE_X
-        static int32_t x = sim_motion_pos[0];
-        if (x != sim_motion_pos[0]) {
-            x = sim_motion_pos[0];
-            DBG("X:%li", x);
-        }
-#endif //SIM_MOTION_TRACE_X
-#ifdef SIM_MOTION_TRACE_Y
-        static int32_t y = sim_motion_pos[1];
-        if (y != sim_motion_pos[1]) {
-            y = sim_motion_pos[1];
-            DBG("Y:%li", y);
-        }
-#endif //SIM_MOTION_TRACE_Y
-#ifdef SIM_MOTION_TRACE_Z
-        static int32_t z = sim_motion_pos[2];
-        if (z != sim_motion_pos[2]) {
-            z = sim_motion_pos[2];
-            DBG("Z:%li", z);
-        }
-#endif //SIM_MOTION_TRACE_Z
-#if defined(FANCTL0_TRACE) && defined(FANCTL0_TRACE)
-        static uint16_t rpm0_tmp = 0;
-        static uint16_t rpm1_tmp = 0;
-        uint16_t rpm0 = fanctl0.getActualRPM();
-        uint16_t rpm1 = fanctl1.getActualRPM();
-        if ((rpm0_tmp != rpm0) || (rpm1_tmp != rpm1)) {
-            rpm0_tmp = rpm0;
-            rpm1_tmp = rpm1;
-            _dbg("rpm0: %-5u rpm1: %-5u", rpm0, rpm1);
-        }
-#else //defined(FANCTL0_TRACE) && defined(FANCTL0_TRACE)
-    #ifdef FANCTL0_TRACE
-        static uint16_t rpm0_tmp = 0;
-        uint16_t rpm0 = fanctl0.getActualRPM();
-        if (rpm0_tmp != rpm0) {
-            rpm0_tmp = rpm0;
-            _dbg("rpm0: %u", rpm0);
-        }
-    #endif //FANCTL0_TRACE
-    #ifdef FANCTL1_TRACE
-        static uint16_t rpm1_tmp = 0;
-        uint16_t rpm1 = fanctl1.getActualRPM();
-        if (rpm1_tmp != rpm1) {
-            rpm1_tmp = rpm1;
-            _dbg("rpm1: %u", rpm1);
-        }
-    #endif //FANCTL1_TRACE
-#endif     //defined(FANCTL0_TRACE) && defined(FANCTL0_TRACE)
+        metric_record_event(&metric_maintask_event);
+        metric_record_integer(&metric_cpu_usage, osGetCPUUsage());
+        marlin_server::loop();
     }
 }
 
@@ -208,45 +222,110 @@ void app_error(void) {
     bsod("app_error");
 }
 
-void app_assert(uint8_t *file, uint32_t line) {
+void app_assert([[maybe_unused]] uint8_t *file, [[maybe_unused]] uint32_t line) {
     bsod("app_assert");
 }
 
-void app_cdc_rx(uint8_t *buffer, uint32_t length) {
-    if (!marlin_server_get_exclusive_mode()) // serial line is disabled in exclusive mode
-        USBSerial_put_rx_data(buffer, length);
+#if HAS_ADVANCED_POWER()
+static uint8_t cnt_advanced_power_update = 0;
+
+void advanced_power_irq() {
+    if (++cnt_advanced_power_update >= 40) { // update Advanced power variables = 25Hz
+        advancedpower.Update();
+    #ifdef ADC_MULTIPLEXER
+        PowerHWIDAndTempMux.switch_channel();
+    #endif
+        cnt_advanced_power_update = 0;
+    }
 }
+#endif // #if HAS_ADVANCED_POWER()
+
+#if (BOARD_IS_XLBUDDY() && FILAMENT_SENSOR_IS_ADC())
+// update filament sensor irq = 76Hz
+static void filament_sensor_irq() {
+
+    static uint8_t cnt_filament_sensor_update = 0;
+
+    if (++cnt_filament_sensor_update >= 13) {
+        for (buddy::puppies::Dwarf &dwarf : buddy::puppies::dwarfs) {
+            if (!dwarf.is_enabled()) {
+                continue;
+            }
+
+            // Main filament sensor
+            fs_process_sample(dwarf.get_tool_filament_sensor(), dwarf.dwarf_index());
+
+            // Side filament sensor
+            auto mapping = side_fsensor_remap::get_mapping();
+            assert(static_cast<size_t>(dwarf.dwarf_index()) < std::size(mapping));
+            const uint8_t remapped = mapping[dwarf.dwarf_index()];
+            assert(remapped < HOTENDS);
+
+            /**
+             * @brief Mapping of ADC channels to each extruder side filament sensor.
+             * ADC channels are laid left top to bottom and right bottom to top.
+             * Left    Right
+             * sfs1    sfs6
+             * sfs2    sfs5
+             * sfs3    sfs4
+             */
+            static const constexpr std::array<AdcChannel::SideFilamnetSensorsAndTempMux, HOTENDS> adc_channel_mapping = {
+                AdcChannel::SideFilamnetSensorsAndTempMux::sfs1, // T0    - left top
+                AdcChannel::SideFilamnetSensorsAndTempMux::sfs2, // T1    - left middle
+                AdcChannel::SideFilamnetSensorsAndTempMux::sfs3, // T2    - left bottom
+                AdcChannel::SideFilamnetSensorsAndTempMux::sfs6, // T3    - right top
+                AdcChannel::SideFilamnetSensorsAndTempMux::sfs5, // T4    - right middle
+                AdcChannel::SideFilamnetSensorsAndTempMux::sfs4, // Empty - right bottom
+            };
+
+            // ensure AdcGet::undefined_value is representable within FSensor::value_type
+            static_assert(static_cast<IFSensor::value_type>(AdcGet::undefined_value) == AdcGet::undefined_value);
+
+            // widen the type to match the main sensor data type and translate the undefined value
+            IFSensor::value_type fs_raw_value = AdcGet::side_filament_sensor(adc_channel_mapping[remapped]);
+            if (fs_raw_value == AdcGet::undefined_value) {
+                fs_raw_value = IFSensor::undefined_value;
+            }
+            side_fs_process_sample(fs_raw_value, dwarf.dwarf_index());
+        }
+        cnt_filament_sensor_update = 0;
+    }
+}
+#endif
 
 void adc_tick_1ms(void) {
-    adc_cycle();
-#ifdef SIM_HEATER
-    static uint8_t cnt_sim_heater = 0;
-    if (++cnt_sim_heater >= 50) // sim_heater freq = 20Hz
-    {
-        sim_heater_cycle();
-        cnt_sim_heater = 0;
-    }
-#endif //SIM_HEATER
+#if HAS_ADVANCED_POWER()
+    advanced_power_irq();
+#endif
 
-#ifdef SIM_MOTION
-    sim_motion_cycle();
-#endif //SIM_MOTION
+#ifdef ADC_MULTIPLEXER
+    SFSAndTempMux.switch_channel();
+#endif
+
+#if HAS_LOADCELL()
+    buddy::probePositionLookback.update(planner.get_axis_position_mm(AxisEnum::Z_AXIS));
+#endif
 }
 
 void app_tim14_tick(void) {
-#ifdef NEW_FANCTL
-    fanctl_tick();
-#endif //NEW_FANCTL
-#ifndef HAS_GUI
-    #error "HAS_GUI not defined."
-#elif HAS_GUI
+    // run sound first, so it is more synchronized
+    Sound_Update1ms();
+
+    Fans::tick();
+
+#if HAS_GUI()
     jogwheel.Update1msFromISR();
 #endif
-    Sound_Update1ms();
-    //hwio_update_1ms();
+
+#if HAS_EMERGENCY_STOP()
+    buddy::emergency_stop().check_z_limits();
+#endif
+
     adc_tick_1ms();
+
+#if (BOARD_IS_XLBUDDY() && FILAMENT_SENSOR_IS_ADC())
+    filament_sensor_irq();
+#endif
 }
 
-} // extern "C"
-
-//cpp code
+// cpp code

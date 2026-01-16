@@ -1,19 +1,25 @@
 #pragma once
 
 #include <cstdint>
-//#include "unicode.h"
+// #include "unicode.h"
 #include <string.h>
 #include <stdio.h>
+#include "assert.h"
+#include <cstdlib>
+#include <span>
+#include <type_traits>
 
-#define UTF8_IS_NONASCII(ch) ((ch)&0x80)
-#define UTF8_IS_CONT(ch)     (((ch)&0xC0) == 0x80)
+#define UTF8_IS_NONASCII(ch)    ((ch)&0x80)
+#define UTF8_IS_CONT(ch)        (((ch)&0xC0) == 0x80)
+#define FORMATTED_STRING_MARKER (FILE *)1 // Special value for formatted string view
 
 using unichar = std::uint32_t;
+class StringViewUtf8ParamBase;
+class StringReaderUtf8;
 
 /// string_view_utf8 allows for iteration over utf8 characters
 /// There will be multiple implementations which will differ in processes of:
 /// - reading a character from input (not necessarily some memory)
-/// - rewinding to the beginning of the source
 /// Typically, CPU FLASH implementation will be different than reading from a USB flash file
 ///
 /// Beware:
@@ -26,199 +32,265 @@ using unichar = std::uint32_t;
 ///    - while allowing for multiple different sources of data
 ///    need to implement some kind of virtual methods but within an instance, which is achieved by pointers to functions and a union of all possible attributes
 class string_view_utf8 {
-    union Attrs {
-        /// interface for utf-8 strings stored in the CPU FLASH.
-        struct FromCPUFLASH_RAM {
-            const uint8_t *utf8raw; ///< pointer to raw utf8 data
-            const uint8_t *readp;   ///< read pointer, aka read iterator
-            constexpr FromCPUFLASH_RAM()
-                : utf8raw(nullptr)
-                , readp(nullptr) {}
-        } cpuflash;
-        /// interface for utf-8 string stored in a FILE - used for validation of the whole translation infrastructure
-        struct FromFile {
-            ::FILE *f;         ///< shared FILE pointer with other instances accessing the same file
-                               ///< @@TODO beware - need some synchronization mechanism to prevent reading from another offset in the file when other instances read as well
-            uint32_t startOfs; ///< start offset in input file
-        } file;
-        constexpr Attrs()
-            : cpuflash() {}
-    };
-    Attrs attrs;
-
-    /// cached length of string. Computed at various spots where not too costly.
-    /// Deliberately typed as signed int, because -1 means "not computed yet"
-    /// @@TODO implement into getUtf8Char somehow
-    mutable int16_t utf8Length;
-
-    enum class EType : uint8_t { RAM,
-        CPUFLASH,
-        SPIFLASH,
-        USBFLASH,
-        FILE,
-        NULLSTR };
-    EType type;
-
-    mutable uint8_t s; ///< must remember the last read character
-
-    static constexpr uint8_t CPUFLASH_getbyte(Attrs &attrs) {
-        return *attrs.cpuflash.readp++; // beware - expecting, that the input string is null-terminated! No other checks are done
-    }
-    static constexpr void CPUFLASH_rewind(Attrs &attrs) {
-        attrs.cpuflash.readp = attrs.cpuflash.utf8raw;
-    }
-
-    static uint8_t FILE_getbyte(Attrs &attrs) {
-        uint8_t c;
-        fread(&c, 1, 1, attrs.file.f);
-        return c;
-    }
-    static void FILE_rewind(Attrs &attrs) {
-        if (attrs.file.f) {
-            fseek(attrs.file.f, attrs.file.startOfs, SEEK_SET);
-        }
-    }
-
-    static constexpr uint8_t NULLSTR_getbyte(Attrs & /*attrs*/) {
-        return 0;
-    }
-    static constexpr void NULLSTR_rewind(Attrs & /*attrs*/) {
-    }
-
-    /// Extracts one byte from source media and advances internal read ptr depending on the type of string_view (type of source data)
-    /// The caller of this function makes sure it does not get called repeatedly after returning the end of input data.
-    /// @return 0 in case of end of input data or an error
-    constexpr uint8_t getbyte() {
-        switch (type) {
-        case EType::RAM:
-        case EType::CPUFLASH:
-            return CPUFLASH_getbyte(attrs);
-        case EType::FILE:
-            return FILE_getbyte(attrs);
-        default: // behave as nullstr
-            return NULLSTR_getbyte(attrs);
-        }
-    }
+    friend class StringReaderUtf8;
+    friend class FormatBuilder;
 
 public:
-    constexpr string_view_utf8()
-        : utf8Length(-1)
-        , type(EType::NULLSTR)
-        , s(0xff) {}
-    ~string_view_utf8() = default;
+    using Length = int16_t;
 
-    /// @returns one UTF-8 character from the input data
-    /// and advances internal pointers (in derived classes) to the next one
-    unichar getUtf8Char() {
-        if (s == 0xff) { // in case we don't have any character from the last run, get a new one from the input stream
-            s = getbyte();
-        }
-        unichar ord = s;
-        if (!UTF8_IS_NONASCII(ord)) {
-            s = 0xff; // consumed, not available for next run
-            return ord;
-        }
-        ord &= 0x7F;
-        for (unichar mask = 0x40; ord & mask; mask >>= 1) {
-            ord &= ~mask;
-        }
-        s = getbyte();
-        while (UTF8_IS_CONT(s)) {
-            ord = (ord << 6) | (s & 0x3F);
-            s = getbyte();
-        }
-        return ord;
-    }
+    enum class Type : uint8_t {
+        /// No string.
+        /// Both \p file and \p memory_ptr are null
+        null_string,
+
+        /// The string is stored in the memory (RAM/CPU FLASH)
+        /// \p file is null, \p memory_ptr contains the pointer
+        memory_string,
+
+        /// The strnig is stored in the file
+        /// \p file contains the file handle, \p file_offset contains the offset
+        file_string,
+
+        /// The string is formatted
+        /// \p file pointer is set to FORMATTED_STRING_MARKER
+        /// \p formatted_string_params points to StringViewUtf8Parameters, which contains the original string_view_utf8 and buffer with preformatted parameters
+        /// While reading StringViewReaderUtf8 is switching between original string_view and parameter buffer
+        formatted_string,
+    };
+
+private:
+    /// If the string view points to a file string, contains the file handle. Otherwise null.
+    FILE *file = nullptr;
+
+    union {
+        /// If file is null, this is a poitner to the memory
+        const uint8_t *memory_ptr = nullptr;
+
+        /// If file is not null, this is used as an offset to the file
+        uint32_t file_offset;
+
+        /// If file is formatted string marker, this structure contains original string_view and buffer for stringified parameters
+        /// THE USER HAS TO MAKE SURE THE STRUCTURE IS NOT DESTROYED FOR THE WHOLE EXISTENCE OF THE STRING_VIEW AND ITS COPIES
+        StringViewUtf8ParamBase const *formatted_string_params;
+    };
+
+public:
+    string_view_utf8() = default;
+    string_view_utf8(const string_view_utf8 &) = default;
+    string_view_utf8(string_view_utf8 &&) = default;
+    string_view_utf8(std::nullptr_t) {}
 
     /// @returns number of UTF-8 characters
     /// Beware: this may be something different than byte-length of the string
     /// Takes O(n) and involves calling getbyte(), thus it may take some time on files.
-    /// Moreover, it modifies the reading position of the stream, the stream is at its end after this method finishes.
-    /// Therefore it is not a const method.
-    uint16_t computeNumUtf8CharsAndRewind() {
-        if (utf8Length < 0) {
-            rewind();
-            do {
-                ++utf8Length;
-            } while (getUtf8Char());
-        }
-        rewind(); // always return stream back to the beginning @@TODO subject to change
-        // now we have either 0 or some positive number in utf8Length, can be safely cast to unsigned int
-        return uint32_t(utf8Length);
-    }
+    Length computeNumUtf8Chars() const;
 
-    /// Rewinds the input data stream to its beginning
-    /// Simple for memory-based sources, more complex for files
-    void rewind() {
-        switch (type) {
-        case EType::RAM:
-        case EType::CPUFLASH:
-            return CPUFLASH_rewind(attrs);
-        case EType::FILE:
-            return FILE_rewind(attrs);
-        default: // behave as nullstr
-            return NULLSTR_rewind(attrs);
+    unichar getFirstUtf8Char() const;
+
+    constexpr inline Type type() const {
+        if (file) {
+            return file == FORMATTED_STRING_MARKER ? Type::formatted_string : Type::file_string;
+        } else if (memory_ptr) {
+            return Type::memory_string;
+        } else {
+            return Type::null_string;
         }
     }
 
     /// returns true if the string is of type NULLSTR - typically used as a replacement for nullptr or "" strings
     constexpr bool isNULLSTR() const {
-        return type == EType::NULLSTR;
+        return type() == Type::null_string;
     }
 
-    /// Copy the string byte-by-byte into some RAM buffer for later processing,
+    /// Copy the string byte-by-byte into some RAM buffer for later processing, without multibyte cutting check
     /// typically used to obtain a translated version of a format string for s(n)printf
     /// @param dst target buffer to copy the bytes to
-    /// @param max_size size of dst in bytes
+    /// @param buffer_size size of dst in bytes
     /// @returns number of bytes (not utf8 characters) copied not counting the terminating '\0'
     /// Using sprintf to format some string is possible with translations, but it requires one more step than usually -
     /// one must first fetch the translated format string into a RAM buffer and then feed the format string into standard sprintf
-    size_t copyToRAM(char *dst, size_t max_size) {
-        size_t bytesCopied = 0;
-        for (size_t i = 0; i < max_size; ++i) {
-            *dst = getbyte();
-            if (*dst == 0)
-                return bytesCopied;
-            ++dst;
-            ++bytesCopied;
-        }
-        *dst = 0; // safety termination in case of reaching the end of the buffer
-        return bytesCopied;
+    size_t copyBytesToRAM(char *dst, size_t buffer_size) const;
+
+    /// Copy the string byte-by-byte into some RAM buffer for later processing,
+    /// typically used to obtain a translated version of a format string for s(n)printf, it also checks cut off characters in truncated strings
+    /// @param dst target buffer to copy the chars to
+    /// @param buffer_size size of dst buffer in bytes
+    /// @returns number of bytes (not utf8 characters) copied not counting the terminating '\0'
+    /// Using sprintf to format some string is possible with translations, but it requires one more step than usually -
+    /// one must first fetch the translated format string into a RAM buffer and then feed the format string into standard sprintf
+    size_t copyToRAM(char *dst, size_t buffer_size) const;
+
+    size_t copyToRAM(std::span<char> target) const {
+        return copyToRAM(target.data(), target.size());
     }
 
     /// Construct string_view_utf8 to provide data from CPU FLASH
-    static constexpr string_view_utf8 MakeCPUFLASH(const uint8_t *utf8raw) {
+    static string_view_utf8 MakeCPUFLASH(const uint8_t *utf8raw) {
         string_view_utf8 s;
-        s.attrs.cpuflash.readp = s.attrs.cpuflash.utf8raw = utf8raw;
-        s.type = EType::CPUFLASH;
+        s.memory_ptr = utf8raw;
         return s;
+    }
+
+    inline static string_view_utf8 MakeCPUFLASH(const char *utf8raw) {
+        return MakeCPUFLASH(reinterpret_cast<const uint8_t *>(utf8raw));
     }
 
     /// Construct string_view_utf8 to provide data from RAM
     /// basically the same as from CPU FLASH, only the string_view_utf8's type differs of course
-    static constexpr string_view_utf8 MakeRAM(const uint8_t *utf8raw) {
+    static string_view_utf8 MakeRAM(const uint8_t *utf8raw) {
         string_view_utf8 s;
-        s.attrs.cpuflash.readp = s.attrs.cpuflash.utf8raw = utf8raw;
-        s.type = EType::RAM;
+        s.memory_ptr = utf8raw;
         return s;
+    }
+
+    static inline string_view_utf8 MakeRAM(const char *utf8raw) {
+        return MakeRAM(reinterpret_cast<const uint8_t *>(utf8raw));
     }
 
     /// Construct string_view_utf8 to provide data from FILE
     /// The FILE *f shall aready be positioned to the spot, where the string starts
-    static constexpr string_view_utf8 MakeFILE(::FILE *f) {
+    static string_view_utf8 MakeFILE(::FILE *f, uint32_t offset) {
         string_view_utf8 s;
-        s.attrs.file.f = f;
         if (f) {
-            s.attrs.file.startOfs = ftell(f);
+            s.file = f;
+            s.file_offset = offset;
         }
-        s.type = EType::FILE;
         return s;
     }
 
     /// Construct an empty string_view_utf8 - behaves like a "" but is a special type NULL
-    static constexpr string_view_utf8 MakeNULLSTR() {
-        string_view_utf8 s;
-        s.type = EType::NULLSTR;
-        return s;
+    static string_view_utf8 MakeNULLSTR() {
+        return string_view_utf8();
     }
+
+    string_view_utf8 &operator=(const string_view_utf8 &other) = default;
+
+    /// Use is_same_ref instead
+    bool operator==(const string_view_utf8 &other) const = delete;
+
+    /// Use !is_same_ref instead
+    bool operator!=(const string_view_utf8 &other) const = delete;
+
+    /// string view has the same resource
+    bool is_same_ref(const string_view_utf8 &other) const {
+        return (file == other.file) && (memory_ptr == other.memory_ptr);
+    }
+
+    /// Formatted string_view replaces format specifiers in the translated text with preformatted parameters from parameter buffer inside params buffer
+    /// The caller has to initialize StringViewUtf8Parameters structure with enough space for stringified parameters. It will store formatted parameters (with '\0' delimeter)
+    /// \returns the current string with formatting applied in a printf-like manner.
+    template <typename... Args>
+    string_view_utf8 formatted(StringViewUtf8ParamBase &params, Args... args) const;
 };
+static_assert(std::is_trivially_copyable_v<string_view_utf8>);
+
+class StringViewUtf8ParamBase {
+public:
+    StringViewUtf8ParamBase(std::span<char> buffer)
+        : buffer(buffer) {}
+
+    string_view_utf8 original = string_view_utf8::MakeNULLSTR();
+    std::span<char> buffer;
+};
+
+template <size_t buffer_size_>
+class StringViewUtf8Parameters : public StringViewUtf8ParamBase {
+public:
+    StringViewUtf8Parameters()
+        : StringViewUtf8ParamBase(array) {}
+
+private:
+    std::array<char, buffer_size_> array;
+};
+
+/// Class for reading the characters of a string_view_utf8
+class StringReaderUtf8 {
+    using Type = string_view_utf8::Type;
+
+public:
+    /// \param view string to be read (reader makes a copy, it does not need to exist during the reader existence)
+    explicit StringReaderUtf8(const string_view_utf8 &view);
+
+    /// The reader is not supposed to be pass-by-value, use \p copy() if you really need a copy
+    StringReaderUtf8(StringReaderUtf8 &&) = delete;
+
+    /// Returns a copy of the reader in its current state.
+    /// Generally, you want to pass \p string_view_utf8 around, or pass the reader by reference, so in general, please tend to avoid this function.
+    StringReaderUtf8 copy() const {
+        return StringReaderUtf8(*this);
+    }
+
+public:
+    /// Skip next \param num_of_chars UTF-8 characters
+    StringReaderUtf8 &skip(uint16_t num_of_chars);
+
+    /// @returns one UTF-8 character from the input data
+    /// and advances internal pointers (in derived classes) to the next one
+    unichar getUtf8Char();
+
+    /// \returns one byte from source media and advances internal read ptr, implementation defined in derived classes
+    /// The caller of this function makes sure it does not get called repeatedly after returning the end of input data.
+    /// \returns 0 in case of end of input data or an error
+    uint8_t getbyte();
+
+    /// Iterates through reader until it finds the first format specifier ('%')
+    /// \returns false if non was found
+    bool find_format_specifier();
+
+    /// Extracts format specifier from translated text to local buffer and snprintf them in \param target.
+    /// if \param target is a nullptr, it skips until the reader points right after format specifier
+    /// \returns -1 if error occured
+    /// \returns 0 if escape sequence was found "%%" - have to be skipped
+    /// \returns positive number if extraction was successful
+    int read_format_specifier(char *target, uint8_t target_size);
+
+private:
+    /// The reader is not supposed to be pass-by-value, use \p copy() if you really need a copy
+    explicit StringReaderUtf8(const StringReaderUtf8 &) = default;
+
+    /// \returns one byte from source media without advancing internal read ptr, implementation defined in derived classes
+    /// The caller of this function makes sure it does not get called repeatedly after returning the end of input data.
+    /// \returns 0 in case of end of input data or an error
+    uint8_t peek() const;
+
+    void advance();
+
+    uint8_t file_peek() const;
+
+    /// Triggers switch between parameter buffer and original string, based on last_read_byte_
+    /// \param ch extracted character
+    /// \returns if read method was switched
+    bool trigger_buffer_switch(uint8_t ch);
+
+private:
+    string_view_utf8 view_;
+    bool switched_to_param_buffer = false;
+    size_t parameter_idx = 0;
+    StringViewUtf8ParamBase const *parameters = nullptr;
+};
+
+class FormatBuilder {
+public:
+    FormatBuilder(string_view_utf8 str_view, StringViewUtf8ParamBase &params);
+
+    /// vsnprinf append of a single parameter to parameter buffer with a format specifier found in the translated text
+    void add_param(const size_t unused, ...);
+
+    string_view_utf8 finalize();
+
+private:
+    char format_specifier[10] = { 0 };
+    StringReaderUtf8 reader;
+    StringViewUtf8ParamBase &params;
+    size_t target_idx = 0;
+};
+
+template <typename... Args>
+string_view_utf8 string_view_utf8::formatted(StringViewUtf8ParamBase &params, Args... args) const {
+    // Check that we're not accidentally passing invalid types to the printf
+    static_assert(((std::is_arithmetic_v<Args> || std::is_same_v<Args, char *> || std::is_same_v<Args, const char *>)&&...));
+
+    FormatBuilder fmt(*this, params);
+    (fmt.add_param(0, args), ...);
+    return fmt.finalize();
+}

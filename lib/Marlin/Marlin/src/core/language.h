@@ -26,51 +26,7 @@
 #define _UxGT(a) a
 
 // Fallback if no language is set. DON'T CHANGE
-#ifndef LCD_LANGUAGE
-  #define LCD_LANGUAGE en
-#endif
-
-// For character-based LCD controllers (DISPLAY_CHARSET_HD44780)
-#define JAPANESE 1
-#define WESTERN  2
-#define CYRILLIC 3
-
-// NOTE: IF YOU CHANGE LANGUAGE FILES OR MERGE A FILE WITH CHANGES
-//
-//   ==> ALWAYS TRY TO COMPILE MARLIN WITH/WITHOUT "ULTIPANEL" / "ULTRA_LCD" / "SDSUPPORT" #define IN "Configuration.h"
-//   ==> ALSO TRY ALL AVAILABLE LANGUAGE OPTIONS
-// See also http://marlinfw.org/docs/development/lcd_language.html
-
-// Languages
-// an         Aragonese
-// bg         Bulgarian
-// ca         Catalan
-// cz         Czech
-// da         Danish
-// de         German
-// el         Greek
-// el_gr      Greek (Greece)
-// en         English
-// es         Spanish
-// eu         Basque-Euskera
-// fi         Finnish
-// fr         French
-// gl         Galician
-// hr         Croatian
-// it         Italian
-// jp_kana    Japanese
-// ko_KR      Korean (South Korea)
-// nl         Dutch
-// pl         Polish
-// pt         Portuguese
-// pt_br      Portuguese (Brazilian)
-// ru         Russian
-// sk         Slovak
-// tr         Turkish
-// uk         Ukrainian
-// vi         Vietnamese
-// zh_CN      Chinese (Simplified)
-// zh_TW      Chinese (Traditional)
+#define LCD_LANGUAGE en
 
 #ifdef DEFAULT_SOURCE_CODE_URL
   #undef  SOURCE_CODE_URL
@@ -93,57 +49,10 @@
 
 #define MARLIN_WEBSITE_URL "http://marlinfw.org"
 
-//#if !defined(STRING_SPLASH_LINE3) && defined(WEBSITE_URL)
-//  #define STRING_SPLASH_LINE3 WEBSITE_URL
-//#endif
-
-#if HAS_CHARACTER_LCD
-
-  // Custom characters defined in the first 8 characters of the LCD
-  #define LCD_STR_BEDTEMP     "\x00" // Print only as a char. This will have 'unexpected' results when used in a string!
-  #define LCD_STR_DEGREE      "\x01"
-  #define LCD_STR_THERMOMETER "\x02" // Still used with string concatenation
-  #define LCD_STR_UPLEVEL     "\x03"
-  #define LCD_STR_REFRESH     "\x04"
-  #define LCD_STR_FOLDER      "\x05"
-  #define LCD_STR_FEEDRATE    "\x06"
-  #define LCD_STR_CLOCK       "\x07"
-  #define LCD_STR_ARROW_RIGHT ">"  /* from the default character set */
-
-#else
-  //
-  // Custom characters from Marlin_symbols.fon which was merged into ISO10646-0-3.bdf
-  // \x00 intentionally skipped to avoid problems in strings
-  //
-  #define LCD_STR_REFRESH     "\x01"
-  #define LCD_STR_FOLDER      "\x02"
-  #define LCD_STR_ARROW_RIGHT "\x03"
-  #define LCD_STR_UPLEVEL     "\x04"
-  #define LCD_STR_CLOCK       "\x05"
-  #define LCD_STR_FEEDRATE    "\x06"
-  #define LCD_STR_BEDTEMP     "\x07"
-  #define LCD_STR_THERMOMETER "\x08"
-  #define LCD_STR_DEGREE      "\x09"
-
-  #define LCD_STR_SPECIAL_MAX '\x09'
-  // Maximum here is 0x1F because 0x20 is ' ' (space) and the normal charsets begin.
-  // Better stay below 0x10 because DISPLAY_CHARSET_HD44780_WESTERN begins here.
-
-  // Symbol characters
-  #define LCD_STR_FILAM_DIA   "\xF8"
-  #define LCD_STR_FILAM_MUL   "\xA4"
-
-#endif
-
-// Common LCD messages
-
-  /* nothing here yet */
-
 // Common serial messages
 #define MSG_MARLIN "Marlin"
 
 // Serial Console Messages (do not translate those!)
-
 #define MSG_ENQUEUEING                      "enqueueing \""
 #define MSG_POWERUP                         "PowerUp"
 #define MSG_EXTERNAL_RESET                  " External Reset"
@@ -177,7 +86,7 @@
 #define MSG_BUSY_PROCESSING                 "busy: processing"
 #define MSG_BUSY_PAUSED_FOR_USER            "busy: paused for user"
 #define MSG_BUSY_PAUSED_FOR_INPUT           "busy: paused for input"
-#define MSG_Z_MOVE_COMP                     "Z_move_comp"
+#define STR_Z_MOVE_COMP                     "Z_move_comp"
 #define MSG_RESEND                          "Resend: "
 #define MSG_UNKNOWN_COMMAND                 "Unknown command: \""
 #define MSG_ACTIVE_EXTRUDER                 "Active Extruder: "
@@ -204,7 +113,7 @@
 #define MSG_ERR_M421_PARAMETERS             "M421 incorrect parameter usage"
 #define MSG_ERR_BAD_PLANE_MODE              "G5 requires XY plane mode"
 #define MSG_ERR_MESH_XY                     "Mesh point cannot be resolved"
-#define MSG_ERR_ARC_ARGS                    "G2/G3 bad parameters"
+#define STR_ERR_ARC_ARGS                    "G2/G3 bad parameters"
 #define MSG_ERR_PROTECTED_PIN               "Protected Pin"
 #define MSG_ERR_M420_FAILED                 "Failed to enable Bed Leveling"
 #define MSG_ERR_M428_TOO_FAR                "Too far from reference point"
@@ -225,6 +134,7 @@
 #define MSG_SD_VOL_INIT_FAIL                "volume.init failed"
 #define MSG_SD_OPENROOT_FAIL                "openRoot failed"
 #define MSG_SD_CARD_OK                      "SD card ok"
+#define MSG_SD_CARD_FAIL                    "No SD card"
 #define MSG_SD_WORKDIR_FAIL                 "workDir open failed"
 #define MSG_SD_OPEN_FILE_FAIL               "open failed, File: "
 #define MSG_SD_FILE_OPENED                  "File opened: "
@@ -294,8 +204,7 @@
 #define MSG_T_THERMAL_RUNAWAY               "Thermal Runaway"
 #define MSG_T_MAXTEMP                       "MAXTEMP triggered"
 #define MSG_T_MINTEMP                       "MINTEMP triggered"
-#define MSG_ERR_PROBING_FAILED              "Probing Failed"
-#define MSG_ZPROBE_OUT_SER                  "Z Probe Past Bed"
+#define STR_ZPROBE_OUT_SER                  "Z Probe Past Bed"
 
 // Debug
 #define MSG_DEBUG_PREFIX                    "DEBUG:"
@@ -307,28 +216,16 @@
 #define MSG_DEBUG_COMMUNICATION             "COMMUNICATION"
 #define MSG_DEBUG_LEVELING                  "LEVELING"
 
-// LCD Menu Messages
-
-#define LANGUAGE_DATA_INCL_(M) STRINGIFY_(fontdata/langdata_##M.h)
-#define LANGUAGE_DATA_INCL(M) LANGUAGE_DATA_INCL_(M)
-
-#define LANGUAGE_INCL_(M) STRINGIFY_(../lcd/language/language_##M.h)
-#define LANGUAGE_INCL(M) LANGUAGE_INCL_(M)
-
 // Never translate these strings
 #define MSG_X "X"
 #define MSG_Y "Y"
+#define STR_X MSG_X
+#define STR_Y MSG_Y
 #define MSG_Z "Z"
 #define MSG_E "E"
-#if IS_KINEMATIC
-  #define MSG_A "A"
-  #define MSG_B "B"
-  #define MSG_C "C"
-#else
-  #define MSG_A "X"
-  #define MSG_B "Y"
-  #define MSG_C "Z"
-#endif
+#define MSG_A "X"
+#define MSG_B "Y"
+#define MSG_C "Z"
 #define MSG_X2 "X2"
 #define MSG_Y2 "Y2"
 #define MSG_Z2 "Z2"
@@ -371,23 +268,6 @@
 #define LCD_STR_E4 "E" LCD_STR_N4
 #define LCD_STR_E5 "E" LCD_STR_N5
 
-#include "multi_language.h"   // Allow multiple languages
-
+#define GET_TEXT(MSG) Language_en::MSG
+typedef const char Language_Str[];
 #include "../lcd/language/language_en.h"
-#include LANGUAGE_INCL(LCD_LANGUAGE)
-#include LANGUAGE_INCL(LCD_LANGUAGE_2)
-#include LANGUAGE_INCL(LCD_LANGUAGE_3)
-#include LANGUAGE_INCL(LCD_LANGUAGE_4)
-#include LANGUAGE_INCL(LCD_LANGUAGE_5)
-
-#if NONE(DISPLAY_CHARSET_ISO10646_1, \
-         DISPLAY_CHARSET_ISO10646_5, \
-         DISPLAY_CHARSET_ISO10646_KANA, \
-         DISPLAY_CHARSET_ISO10646_GREEK, \
-         DISPLAY_CHARSET_ISO10646_CN, \
-         DISPLAY_CHARSET_ISO10646_TR, \
-         DISPLAY_CHARSET_ISO10646_PL, \
-         DISPLAY_CHARSET_ISO10646_CZ, \
-         DISPLAY_CHARSET_ISO10646_SK)
-  #define DISPLAY_CHARSET_ISO10646_1 // use the better font on full graphic displays.
-#endif

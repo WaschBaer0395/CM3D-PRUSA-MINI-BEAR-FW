@@ -1,0 +1,163 @@
+
+#include "M141_M191.hpp"
+
+#include <marlin_stubs/PrusaGcodeSuite.hpp>
+#include <marlin_stubs/skippable_gcode.hpp>
+
+#include <feature/chamber/chamber.hpp>
+#include <gcode/gcode_parser.hpp>
+#include <module/planner.h>
+#include <lcd/ultralcd.h> // Some marlin garbage dunno
+#include <marlin_server.hpp>
+#include <gcode/gcode.h>
+#include <feature/print_status_message/print_status_message_guard.hpp>
+#include <feature/safety_timer/safety_timer.hpp>
+
+using namespace buddy;
+
+/**
+ *### M141: Set chamber temperature <a href="https://reprap.org/wiki/G-code#M141:_Set_Chamber_Temperature_.28Fast.29">M141: Set Chamber Temperature (Fast)</a>
+ *
+ * #### Usage
+ *
+ *     M141 [ S ]
+ *
+ *#### Parameters
+ *
+ * - `S` - Target temperature, in degrees Celsius. 0 = no target temperature
+ */
+
+void PrusaGcodeSuite::M141() {
+    using buddy::Temperature;
+
+    GCodeParser2 p;
+    if (!p.parse_marlin_command()) {
+        return;
+    }
+
+    if (const auto temp = p.option<Temperature>('S')) {
+        M141_no_parser({ .target_temp = *temp });
+    }
+}
+
+/**
+ *
+ *### M191: Wait for chamber temperature <a href="https://reprap.org/wiki/G-code#M191:_Wait_for_chamber_temperature_to_reach_target_temp">M191: Wait for chamber temperature to reach target temp</a>
+ *
+ * #### Usage
+ *
+ *     M191 [ S | R | C ]
+ *
+ *#### Parameters
+ *
+ * - `S` - Target temperature in degrees Celsius. Wait only for heating.
+ * - `R` - Target temperature in degrees Celsius. Wait for both cooling and heating.
+ * - `C` - Target temperature in degrees Celsius. Wait only for cooling.
+ */
+
+void PrusaGcodeSuite::M191() {
+    using buddy::Temperature;
+
+    GCodeParser2 p;
+    if (!p.parse_marlin_command()) {
+        return;
+    }
+
+    if (const auto opt = p.option_multikey<Temperature>({ 'S', 'R', 'C' })) {
+        M141_no_parser({
+            .target_temp = opt->first,
+            .wait_for_heating = (opt->second) != 'C',
+            .wait_for_cooling = (opt->second) != 'S',
+        });
+    }
+}
+
+void PrusaGcodeSuite::M141_no_parser(const M141Args &args) {
+    using buddy::Temperature;
+
+    // Keep everything heated up while we're waiting
+    buddy::SafetyTimerBlocker safety_timer_blocker;
+
+    if (!chamber().capabilities().temperature_control()) {
+        SERIAL_ERROR_MSG("Chamber does not allow temperature control");
+    }
+
+    auto target = args.target_temp;
+    if (target == 0) {
+        chamber().set_target_temperature({});
+        return;
+    }
+
+    // The temperature might have gotten cropped due to chamber limitations - make sure that we're waiting for the one that is actually set
+    target = *chamber().set_target_temperature(target);
+    if (!args.wait_for_cooling && !args.wait_for_heating) {
+        return;
+    }
+
+    /// How long we should wait until displaying a warning that we're failing to reach the temperature
+    static constexpr int32_t warning_timeout_ms = 30 * 60 * 1000;
+
+    uint32_t warning_timeout_start = ticks_ms();
+    SkippableGCode::Guard skippable_operation;
+
+    PrintStatusMessageGuard statusGuard;
+    while (true) {
+        if (planner.draining()) {
+            // We're aborting -> stop waiting
+            break;
+        }
+
+        const auto current = chamber().current_temperature();
+        static const Temperature tolerance = 3;
+
+        statusGuard.update<PrintStatusMessage::waiting_for_chamber_temp>({ .current = current.value_or(0), .target = target });
+
+        const auto now = ticks_ms();
+
+        // Show a heat failure warning if we're waiting for too long
+        if (ticks_diff(now, warning_timeout_start) >= warning_timeout_ms && !marlin_server::is_warning_active(WarningType::FailedToReachChamberTemperature)) {
+            marlin_server::set_warning(WarningType::FailedToReachChamberTemperature);
+        }
+
+        if (marlin_server::is_warning_active(WarningType::FailedToReachChamberTemperature)) {
+            switch (marlin_server::get_response_from_phase(warning_type_phase(WarningType::FailedToReachChamberTemperature))) {
+
+            case Response::Ok:
+                marlin_server::clear_warning(WarningType::FailedToReachChamberTemperature);
+                warning_timeout_start = now;
+                break;
+
+            case Response::Skip:
+                skippable_gcode().request_skip();
+                break;
+
+            default:
+                break;
+            }
+        }
+
+        if (skippable_operation.is_skip_requested()) {
+            // Skip requested -> exit
+            break;
+
+        } else if (!current.has_value()) {
+            // We don't know chamber temperature -> wait until we do
+
+        } else if (std::abs(*current - target) <= tolerance) {
+            // We're at the target -> done
+            break;
+
+        } else if (*current < target + tolerance && !args.wait_for_heating) {
+            // We're cool and not waiting for heat -> done
+            break;
+
+        } else if (*current > target - tolerance && !args.wait_for_cooling) {
+            // We're hot and not waiting for cooling -> done
+            break;
+        }
+
+        idle(true);
+    }
+
+    marlin_server::clear_warning(WarningType::FailedToReachChamberTemperature);
+}

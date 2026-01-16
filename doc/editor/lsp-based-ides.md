@@ -5,16 +5,15 @@
 3. Invoke CMake directly with your configuration, for example:
 
     ```bash
-    cmake .. -G Ninja \
-             -DCMAKE_TOOLCHAIN_FILE=../cmake/GccArmNoneEabi.cmake \
+    cmake .. --preset mini \
+             -G Ninja \
              -DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
              -DBOOTLOADER=YES \
-             -DPRINTER=MINI \
              -DCMAKE_BUILD_TYPE=Debug
     ```
 
     See the header of `./CMakeLists.txt` for more command-line options (most of them are one-to-one mapped with `build.py`'s options).
-4. And invoke `ninja`. It will generate a `compile_commands.json` file, that an LSP server can pick up and use to provide autocompletion to your editor (we recommend using `ccls`).
+4. And invoke `ninja`. It will generate a `compile_commands.json` file, that an LSP server can pick up and use to provide autocompletion to your editor (we recommend using `clangd`).
 5. Install some spell checker (optional but recommended).
 
 > This assumes you have sufficient version of cmake and ninja available in your PATH.

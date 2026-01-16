@@ -1,118 +1,210 @@
 // gui.cpp
-#include "display.h"
-#include "gui.hpp"
 #include <stdlib.h>
-#include "stm32f4xx_hal.h"
+
+#include "display.hpp"
+#include "gui.hpp"
+#include "gui_time.hpp" //gui::GetTick
 #include "ScreenHandler.hpp"
+#include "sound.hpp"
 #include "IDialog.hpp"
 #include "Jogwheel.hpp"
 #include "ScreenShot.hpp"
 #include "gui_media_events.hpp"
+#include "gui_invalidate.hpp"
+#include "knob_event.hpp"
+#include "marlin_client.hpp"
+#include <utils/timing/rate_limiter.hpp>
+#include <logging/log.hpp>
+#include "display_hw_checks.hpp"
+#include <option/has_leds.h>
+#if HAS_LEDS()
+    #include <leds/led_manager.hpp>
+#endif
 
-static const constexpr uint16_t GUI_FLG_INVALID = 0x0001;
+#include <option/has_touch.h>
+
+#if HAS_TOUCH()
+    #include <hw/touchscreen/touchscreen.hpp>
+#endif
+
+#include <config_store/store_instance.hpp>
+#include <guiconfig/guiconfig.h>
+
+#if HAS_MINI_DISPLAY()
+    #include "st7789v.hpp"
+#endif
+
+#if HAS_SELFTEST()
+    #include <gui/screen_menu_selftest_snake.hpp>
+#endif
+
+LOG_COMPONENT_REF(GUI);
+LOG_COMPONENT_REF(Touch);
 
 static bool gui_invalid = false;
-
-#ifdef GUI_USE_RTOS
-osThreadId gui_task_handle = 0;
-#endif //GUI_USE_RTOS
-
-font_t *GuiDefaults::Font = nullptr;
-font_t *GuiDefaults::FontBig = nullptr;
-font_t *GuiDefaults::FontMenuItems = nullptr;
-font_t *GuiDefaults::FontMenuSpecial = nullptr;
 
 constexpr padding_ui8_t GuiDefaults::Padding;
 constexpr Rect16 GuiDefaults::RectHeader;
 constexpr Rect16 GuiDefaults::RectScreenBody;
-constexpr Rect16 GuiDefaults::RectScreenBodyNoFoot;
 constexpr Rect16 GuiDefaults::RectScreen;
+constexpr Rect16 GuiDefaults::RectScreenNoFoot;
+constexpr Rect16 GuiDefaults::RectScreenNoHeader;
 constexpr Rect16 GuiDefaults::RectFooter;
 
-gui_loop_cb_t *gui_loop_cb = nullptr;
-uint32_t gui_loop_tick = 0;
+static const constexpr uint32_t GUI_DELAY_MIN = 1;
+static const constexpr uint32_t GUI_DELAY_MAX = 10;
+static const constexpr uint8_t GUI_DELAY_LOOP = 100;
+static const constexpr uint32_t GUI_DELAY_REDRAW = 40; // 40 ms => 25 fps
+
+static RateLimiter<uint32_t> gui_roll_timer(txtroll_t::GetBaseTick());
+static RateLimiter<uint32_t> gui_loop_timer(GUI_DELAY_LOOP);
+static RateLimiter<uint32_t> gui_redraw_timer(GUI_DELAY_REDRAW);
 
 void gui_init(void) {
-    display::Init();
-    gui_task_handle = osThreadGetId();
+    display::init();
+
+// select jogwheel type by measured 'reset delay'
+// original displays with 15 position encoder returns values 1-2 (short delay - no capacitor)
+// new displays with MK3 encoder returns values around 16000 (long delay - 100nF capacitor)
+#if HAS_MINI_DISPLAY()
+    // run-time jogwheel type detection decides which type of jogwheel device has (each type has different encoder behaviour)
+    jogwheel.SetJogwheelType(st7789v_reset_delay);
+#else
+    jogwheel.SetJogwheelType(0);
+#endif
 }
 
-void gui_redraw(void) {
-    if (gui_invalid) {
-        Screens::Access()->Draw();
-        gui_invalid = false;
-    }
-}
-
-//at least one window is invalid
-void gui_invalidate(void) {
-    gui_invalid = true;
-#ifdef GUI_USE_RTOS
-    osSignalSet(gui_task_handle, GUI_SIG_REDRAW);
-#endif //GUI_USE_RTOS
-}
-
-static const constexpr uint8_t GUI_DELAY_MIN = 1;
-static const constexpr uint8_t GUI_DELAY_MAX = 10;
-static const constexpr uint8_t GUI_DELAY_LOOP = 100;
-
-#ifdef GUI_WINDOW_SUPPORT
-
-static uint8_t guiloop_nesting = 0;
-uint8_t gui_get_nesting(void) { return guiloop_nesting; }
-
-void gui_loop(void) {
-    ++guiloop_nesting;
-    uint32_t delay;
-    uint32_t tick;
-
-    #ifdef GUI_JOGWHEEL_SUPPORT
+void gui_handle_jogwheel() {
     BtnState_t btn_ev;
     bool is_btn = jogwheel.ConsumeButtonEvent(btn_ev);
     int32_t encoder_diff = jogwheel.ConsumeEncoderDiff();
 
     if (encoder_diff != 0 || is_btn) {
-        if (gui_loop_cb)
-            gui_loop_cb();
-
-        window_t::EventEncoder(encoder_diff);
+        gui::knob::EventEncoder(encoder_diff);
 
         if (is_btn) {
-            window_t::EventJogwheel(btn_ev);
+            gui::knob::EventClick(btn_ev);
         }
     }
-    #endif //GUI_JOGWHEEL_SUPPORT
+}
 
-    GuiMediaEventsHandler::state_t media_state = GuiMediaEventsHandler::ConsumeMediaState();
-    switch (media_state) {
-    case GuiMediaEventsHandler::state_t::inserted:
-    case GuiMediaEventsHandler::state_t::removed:
-    case GuiMediaEventsHandler::state_t::error:
-        Screens::Access()->ScreenEvent(nullptr, GUI_event_t::MEDIA, (void *)int(media_state));
-        break;
-    default:
-        break;
+#if HAS_TOUCH()
+void gui_handle_touch() {
+    if (!touchscreen.is_enabled()) {
+        return;
     }
 
-    delay = gui_timers_cycle();
-    if (delay < GUI_DELAY_MIN)
-        delay = GUI_DELAY_MIN;
-    if (delay > GUI_DELAY_MAX)
-        delay = GUI_DELAY_MAX;
-    #ifdef GUI_USE_RTOS
-    osEvent evt = osSignalWait(GUI_SIG_REDRAW, delay);
-    if ((evt.status == osEventSignal) && (evt.value.signals & GUI_SIG_REDRAW))
-    #endif //GUI_USE_RTOS
+    const auto touch_event = touchscreen.get_event();
+    if (!touch_event) {
+        return;
+    }
 
-        gui_redraw();
-    tick = HAL_GetTick();
-    if ((tick - gui_loop_tick) >= GUI_DELAY_LOOP) {
-        if (gui_loop_cb)
-            gui_loop_cb();
-        gui_loop_tick = tick;
+    // we clicked on something, does not really matter on what we clicked
+    // we must notify serve to so it knows user is doing something and resets menu timeout, heater timeout ...
+    Screens::Access()->ResetTimeout();
+
+    if (touch_event.type == GUI_event_t::TOUCH_CLICK) {
+        Sound_Play(eSOUND_TYPE::ButtonEcho);
+        marlin_client::notify_server_about_knob_click();
+    }
+
+    event_conversion_union event_data {
+        .point = {
+            .x = touch_event.pos_x,
+            .y = touch_event.pos_y,
+        }
+    };
+
+    // Determine if we should propagate the event only to the captured window or globally as a screen event
+    const bool propagate_as_screen_event = (touch_event.type != GUI_event_t::TOUCH_CLICK);
+
+    if (propagate_as_screen_event) {
+        Screens::Access()->ScreenEvent(nullptr, touch_event.type, event_data.pvoid);
+    }
+
+    else if (window_t *captured_window = Screens::Access()->Get()->GetCapturedWindow(); captured_window && captured_window->get_rect_for_touch().Contain(event_data.point)) {
+        captured_window->WindowEvent(captured_window, touch_event.type, event_data.pvoid);
+    }
+}
+#endif
+
+void gui_redraw(void) {
+    const uint32_t now = ticks_ms();
+
+    if (gui_loop_timer.check(now)) {
         Screens::Access()->ScreenEvent(nullptr, GUI_event_t::LOOP, 0);
     }
+
+    if (txtroll_t::HasInstance() && gui_roll_timer.check(now)) {
+        Screens::Access()->ScreenEvent(nullptr, GUI_event_t::TEXT_ROLL, nullptr);
+    }
+
+    bool should_sleep = true;
+    if (gui_invalid) {
+        if (gui_redraw_timer.check(now)) {
+            Screens::Access()->Draw();
+            gui_invalid = false;
+            should_sleep = false;
+        }
+    }
+
+    if (should_sleep) {
+        uint32_t sleep = std::clamp(gui_redraw_timer.remaining_cooldown(now), GUI_DELAY_MIN, GUI_DELAY_MAX);
+        osDelay(sleep);
+    }
+}
+
+// at least one window is invalid
+void gui_invalidate(void) {
+    gui_invalid = true;
+}
+
+static uint8_t guiloop_nesting = 0;
+uint8_t gui_get_nesting(void) { return guiloop_nesting; }
+
+void gui_bare_loop() {
+    ++guiloop_nesting;
+
+    gui_handle_jogwheel();
+
+    gui_redraw();
+
     --guiloop_nesting;
 }
 
-#endif //GUI_WINDOW_SUPPORT
+void gui_loop(void) {
+    ++guiloop_nesting;
+    lcd::communication_check();
+    gui_handle_jogwheel();
+
+#if HAS_LEDS()
+    leds::LEDManager::instance().update();
+#endif
+
+#if HAS_TOUCH()
+    gui_handle_touch();
+#endif
+
+    MediaState_t media_state = MediaState_t::unknown;
+    if (GuiMediaEventsHandler::ConsumeSent(media_state)) {
+        switch (media_state) {
+        case MediaState_t::inserted:
+        case MediaState_t::removed:
+        case MediaState_t::error:
+            Screens::Access()->ScreenEvent(nullptr, GUI_event_t::MEDIA, (void *)int(media_state));
+            break;
+        default:
+            break;
+        }
+    }
+
+    gui_redraw();
+    marlin_client::loop();
+    GuiMediaEventsHandler::Tick();
+#if HAS_SELFTEST()
+    if (marlin_client::event_clr(marlin_server::Event::RequestCalibrationsScreen)) {
+        Screens::Access()->Open<ScreenMenuSTSCalibrations>();
+    }
+#endif
+    --guiloop_nesting;
+}

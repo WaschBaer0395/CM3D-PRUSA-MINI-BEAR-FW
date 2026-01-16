@@ -23,9 +23,23 @@
 #include "../gcode.h"
 #include "../queue.h" // for last_N
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M110: Set Current Line Number
+ *### M110: Set Current Line Number <a href="https://reprap.org/wiki/G-code#M110:_Set_Current_Line_Number">M110: Set Current Line Number</a>
+ *
+ *#### Usage
+ *
+ *    M110 [ N ]
+ *
+ *#### Parameters
+ *
+ * - `N` - Set queue's last line number
  */
 void GcodeSuite::M110() {
   if (parser.seenval('N')) queue.last_N = parser.value_long();
 }
+
+/** @}*/

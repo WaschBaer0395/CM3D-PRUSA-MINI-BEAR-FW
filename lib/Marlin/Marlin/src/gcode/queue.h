@@ -27,6 +27,8 @@
  */
 
 #include "../inc/MarlinConfig.h"
+#include <limits>
+#include <gcode/inject_queue_actions.hpp>
 
 class GCodeQueue {
 public:
@@ -53,6 +55,22 @@ public:
 
   static char command_buffer[BUFSIZE][MAX_CMD_SIZE];
 
+  static constexpr uint32_t SDPOS_INVALID = std::numeric_limits<uint32_t>::max(); // When sdpos doesn't have valid value
+
+  static uint32_t sdpos;                 // Position in file for the latest instruction (behind the end of the queue)
+  static uint32_t last_executed_sdpos;      // (replay) Position of the last executed gcode
+  static uint32_t executed_commmand_count; ///< Increased every time a command is executed
+  static uint32_t sdpos_buffer[BUFSIZE]; // Ring buffer of (replay) positions (synced with command_buffer)
+
+  /// True pauses processing of serial commands.
+  static bool pause_serial_commands;
+
+  /// Return the file position of the _current_ instruction
+  /// Red note: right after executing the gcode, the queue is advanced to the next one, so this actually returns the next gcode
+  static uint32_t get_current_sdpos() {
+    return length ? sdpos_buffer[index_r] : sdpos;
+  }
+
   /*
    * The port that the command was received on
    */
@@ -63,16 +81,21 @@ public:
   GCodeQueue();
 
   /**
-   * Clear the Marlin command queue
+   * Clear the Marlin command queue and return reading index.
    */
   static void clear();
 
   /**
    * Enqueue one or many commands to run from program memory.
-   * Aborts the current queue, if any.
    * Note: process_injected_command() will process them.
    */
-  static void inject_P(PGM_P const pgcode);
+  static void inject_P(ConstexprString pgcode);
+
+  /**
+   * Enqueue action to inject_queue, if inject_queue isn't already full
+   * @param record [in] record variant
+   */
+  static bool inject(InjectQueueRecord record);
 
   /**
    * Enqueue and return only when commands are actually enqueued
@@ -86,6 +109,8 @@ public:
 
   /**
    * Check whether there are any commands yet to be executed
+   * 
+   * !!! Consider using marlin_server::is_processing() instead, it's usually the right choice
    */
   static bool has_commands_queued();
 
@@ -125,10 +150,6 @@ private:
 
   static void get_serial_commands();
 
-  #if ENABLED(SDSUPPORT)
-    static void get_sdcard_commands();
-  #endif
-
   static void _commit_command(bool say_ok
     #if NUM_SERIAL > 1
       , int16_t p=-1
@@ -146,10 +167,10 @@ private:
 
 public:
   /**
-   * Enqueue with Serial Echo (optionaly without)
+   * Enqueue with Serial Echo (optionally without)
    * Return true on success
    */
-  static bool enqueue_one(const char* cmd, bool echo=true);
+   [[nodiscard]] static bool enqueue_one(const char* cmd, bool echo=true);
 
 private:
   static void gcode_line_error(PGM_P const err, const int8_t port);

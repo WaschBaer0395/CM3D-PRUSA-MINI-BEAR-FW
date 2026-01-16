@@ -19,44 +19,51 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-#include "../../lib/Marlin/Marlin/src/inc/MarlinConfig.h"
+#include "config_features.h"
 
 #if ENABLED(HOST_PROMPT_SUPPORT) && DISABLED(EMERGENCY_PARSER)
 
     #include "../../lib/Marlin/Marlin/src/feature/host_actions.h"
-    #include "safety_timer_stubbed.hpp"
     #include "../../lib/Marlin/Marlin/src/gcode/gcode.h"
-    #include "../../lib/Marlin/Marlin/src/Marlin.h"
     #include "marlin_server.hpp"
     #include "client_fsm_types.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M876: Handle Prompt Response
+ *### M876: Handle Prompt Response <a href="https://reprap.org/wiki/G-code#M876:_Dialog_handling">M876: Dialog handling</a>
  *
- * E display error popup other parameters are ignored
+ * Only MINI
+ *
+ *#### Usage
+ *
+ *    M876 [ S | E ]
+ *
+ *#### Parameters
+ *
+ * - `S` - Response to prompt
+ * - `E` - Display error popup other parameters are ignored
+ *
  * E value must be smaller than WarningType::_count
  */
 void GcodeSuite::M876() {
-    //mainly for debug
+    // mainly for debug
 
     if (parser.seenval('E')) {
         uint32_t val = parser.value_int();
-        if (val > uint32_t(WarningType::_last))
+        if (val >= uint32_t(WarningType::_cnt)) {
             return;
-        set_warning(WarningType(val));
-    } else {
-
-        if (parser.seenval('P')) {
-            if (parser.value_int()) {
-                fsm_create(ClientFSM::Serial_printing);
-            } else {
-                fsm_destroy(ClientFSM::Serial_printing);
-                SafetyTimer::Instance().ReInit(); // in miliseconds
-            }
         }
-        if (parser.seenval('S'))
+        marlin_server::set_warning(WarningType(val));
+    } else {
+        if (parser.seenval('S')) {
             host_response_handler((uint8_t)parser.value_int());
+        }
     }
 }
 
 #endif // HOST_PROMPT_SUPPORT && !EMERGENCY_PARSER
+
+/** @}*/

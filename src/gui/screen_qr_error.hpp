@@ -1,23 +1,28 @@
-//screen_qr_error.hpp
+// screen_qr_error.hpp
 #pragma once
 #include "gui.hpp"
 #include "window_text.hpp"
-#include "support_utils.h" //MAX_LEN_4QR
 #include <array>
 #include "screen.hpp"
+#include "screen_reset_error.hpp"
+#include "window_header.hpp"
+#include "status_footer.hpp"
+#include <gui/qr.hpp>
+#include <gui/text_error_url.hpp>
+#include <option/has_leds.h>
 
-struct screen_qr_error_data_t : public AddSuperWindow<screen_t> {
-    window_text_t errText;
-    window_text_t errDescription;
-    window_text_t info;
-    window_qr_t qr;
-    std::array<char, MAX_LEN_4QR + 1> qr_text;
-    bool first_run_flag;
+struct ScreenErrorQR : public ScreenResetError {
+
+    window_header_t header;
+    window_text_t err_title;
+    window_text_t err_description;
+    window_icon_t hand_icon;
+    QRErrorUrlWindow qr;
+    window_text_t help_txt;
+    TextErrorUrlWindow help_link;
+    window_text_t qr_code_txt;
+    BasicWindow title_line;
 
 public:
-    screen_qr_error_data_t();
-
-protected:
-    virtual void windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) override;
-    virtual void unconditionalDraw() override;
+    ScreenErrorQR();
 };

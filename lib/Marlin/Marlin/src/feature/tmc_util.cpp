@@ -20,29 +20,83 @@
  *
  */
 
-#include "../inc/MarlinConfig.h"
-
-#if HAS_TRINAMIC
-
 #include "tmc_util.h"
-#include "../Marlin.h"
+#include <module/printcounter.h>
+#include <module/stepper/trinamic.h>
+#include <module/motion.h>
+#include <bsod.h>
 
-#include "../module/stepper/indirection.h"
-#include "../module/printcounter.h"
-#include "../libs/duration_t.h"
-#include "../gcode/gcode.h"
+#if !BOARD_IS_DWARF()
+  #include <metric.h>
+#endif
+
+#include <option/has_planner.h>
+#if HAS_PLANNER()
+  #include <module/stepper.h>
+#endif
+
+#if ENABLED(STOP_ON_ERROR)
+  #include <Marlin.h>
+#endif
 
 #if ENABLED(TMC_DEBUG)
-  #include "../module/planner.h"
   #include "../libs/hex_print_routines.h"
   #if ENABLED(MONITOR_DRIVER_STATUS)
     static uint16_t report_tmc_status_interval; // = 0
   #endif
 #endif
 
-#if HAS_LCD_MENU
-  #include "../module/stepper.h"
+#if !defined(STALL_THRESHOLD_TMC2130) && !BOARD_IS_DWARF()
+  #include <config_store/store_instance.hpp>
 #endif
+
+#include <device/board.h>
+#if BOARD_IS_XBUDDY()
+  #include <hw_configuration.hpp>
+#endif
+
+static constexpr uint32_t TMC2130_INT_OSC_FREQ = 12650000;
+static constexpr uint32_t TMC2130_EXT_OSC_FREQ = 16000000;
+
+static inline uint32_t get_tmc_freq(AxisEnum axis_id) {
+  switch (axis_id) {
+  case X_AXIS:
+  case Y_AXIS:
+  case Z_AXIS:
+#if BOARD_IS_XBUDDY()
+    return buddy::hw::Configuration::Instance().has_trinamic_oscillators() ? TMC2130_EXT_OSC_FREQ : TMC2130_INT_OSC_FREQ;
+#elif BOARD_IS_XLBUDDY()
+    return TMC2130_EXT_OSC_FREQ;
+#else
+    return TMC2130_INT_OSC_FREQ;
+#endif
+
+  default:
+    return TMC2130_INT_OSC_FREQ;
+  }
+}
+
+// The conversion between period and feedrate is symmetric, use a shared
+// implementation and just do a cast from float to uint32_t when needed.
+static float period_feedrate_conversion(AxisEnum axis_id, uint16_t msteps, const float value, const uint32_t steps_per_mm) {
+  if (value == 0) {
+      return std::numeric_limits<float>::infinity();
+  }
+  if (steps_per_mm == 0) {
+      bsod("0 steps per mm.");
+  }
+  msteps = std::max<uint16_t>(1, msteps); // 0 msteps is infact 1
+
+  return get_tmc_freq(axis_id) * msteps / (256.f * value * steps_per_mm);
+}
+
+float tmc_period_to_feedrate(AxisEnum axis_id, uint16_t msteps, const uint32_t period, const uint32_t steps_per_mm) {
+  return period_feedrate_conversion(axis_id, msteps, period, steps_per_mm);
+}
+
+uint32_t tmc_feedrate_to_period(AxisEnum axis_id, uint16_t msteps, const float feedrate, const uint32_t steps_per_mm) {
+  return static_cast<uint32_t>(period_feedrate_conversion(axis_id, msteps, feedrate, steps_per_mm));
+}
 
 /**
  * Check for over temperature or short to ground error flags.
@@ -285,6 +339,12 @@
       // Report if a warning was triggered
       if (data.is_otpw && st.otpw_count == 0)
         report_driver_otpw(st);
+
+      #ifdef SHOW_ERROR_AFTER_OVERTEMP
+      if (data.is_otpw) {
+        kill("TMC", "TMC overtemp!");
+      }
+      #endif
 
       #if CURRENT_STEP_DOWN > 0
         // Decrease current if is_otpw is true and driver is enabled and there's been more than 4 warnings
@@ -966,81 +1026,65 @@
 
 #if USE_SENSORLESS
 
-  bool tmc_enable_stallguard(TMC2130Stepper &st) {
-    bool stealthchop_was_enabled = st.en_pwm_mode();
+#if HAS_DRIVER(TMC2130)
+  #if !BOARD_IS_DWARF()
+  uint32_t get_homing_stall_threshold(AxisEnum axis_id) {
+      switch (axis_id) {
+      case X_AXIS:
+      case Y_AXIS:
+  #ifdef STALL_THRESHOLD_TMC2130
+          return STALL_THRESHOLD_TMC2130;
+  #else
+          return tmc_period_to_feedrate(X_AXIS, get_microsteps_x(), HOMING_FEEDRATE_XY / 60 * 0.8, get_steps_per_unit_x());
+  #endif
+      case Z_AXIS:
+          return 400;
+      default:
+          bsod("Wrong axis for homing stall threshold");
+      }
+  }
+  #endif
 
-    st.TCOOLTHRS(0xFFFFF);
+  bool tmc_enable_stallguard(TMCMarlin<TMC2130Stepper> &st) {
+    bool stealthchop_was_enabled = st.en_pwm_mode();
+#ifdef STALL_THRESHOLD_TMC2130
+    st.TCOOLTHRS(STALL_THRESHOLD_TMC2130);
+#else
+    st.TCOOLTHRS(get_homing_stall_threshold(st.axis_id));
+#endif
     st.en_pwm_mode(false);
     st.diag1_stall(true);
+    st.sfilt(false);
 
     return stealthchop_was_enabled;
   }
-  void tmc_disable_stallguard(TMC2130Stepper &st, const bool restore_stealth) {
+  void tmc_disable_stallguard(TMCMarlin<TMC2130Stepper> &st, const bool restore_stealth) {
     st.TCOOLTHRS(0);
     st.en_pwm_mode(restore_stealth);
     st.diag1_stall(false);
   }
+#endif // HAS_DRIVER(TMC2130)
 
-  bool tmc_enable_stallguard(TMC2209Stepper &st) {
-    st.TCOOLTHRS(0xFFFFF);
+#if HAS_DRIVER(TMC2209)
+  bool tmc_enable_stallguard(TMCMarlin<TMC2209Stepper> &st) {
+    st.TCOOLTHRS(STALL_THRESHOLD_TMC2209);
     return true;
   }
-  void tmc_disable_stallguard(TMC2209Stepper &st, const bool restore_stealth _UNUSED) {
+  void tmc_disable_stallguard(TMCMarlin<TMC2209Stepper> &st, const bool restore_stealth _UNUSED) {
     st.TCOOLTHRS(0);
   }
+#endif // HAS_DRIVER(TMC2209)
 
-  bool tmc_enable_stallguard(TMC2660Stepper) {
+#if HAS_DRIVER(TMC2260)
+  bool tmc_enable_stallguard(TMCMarlin<TMC2660Stepper>) {
     // TODO
     return false;
   }
-  void tmc_disable_stallguard(TMC2660Stepper, const bool) {};
+  void tmc_disable_stallguard(TMCMarlin<TMC2660Stepper>, const bool) {};
+#endif // HAS_DRIVER(TMC2260)
+
 
 #endif // USE_SENSORLESS
-
-#if TMC_HAS_SPI
-  #define SET_CS_PIN(st) OUT_WRITE(st##_CS_PIN, HIGH)
-  void tmc_init_cs_pins() {
-    #if AXIS_HAS_SPI(X)
-      SET_CS_PIN(X);
-    #endif
-    #if AXIS_HAS_SPI(Y)
-      SET_CS_PIN(Y);
-    #endif
-    #if AXIS_HAS_SPI(Z)
-      SET_CS_PIN(Z);
-    #endif
-    #if AXIS_HAS_SPI(X2)
-      SET_CS_PIN(X2);
-    #endif
-    #if AXIS_HAS_SPI(Y2)
-      SET_CS_PIN(Y2);
-    #endif
-    #if AXIS_HAS_SPI(Z2)
-      SET_CS_PIN(Z2);
-    #endif
-    #if AXIS_HAS_SPI(Z3)
-      SET_CS_PIN(Z3);
-    #endif
-    #if AXIS_HAS_SPI(E0)
-      SET_CS_PIN(E0);
-    #endif
-    #if AXIS_HAS_SPI(E1)
-      SET_CS_PIN(E1);
-    #endif
-    #if AXIS_HAS_SPI(E2)
-      SET_CS_PIN(E2);
-    #endif
-    #if AXIS_HAS_SPI(E3)
-      SET_CS_PIN(E3);
-    #endif
-    #if AXIS_HAS_SPI(E4)
-      SET_CS_PIN(E4);
-    #endif
-    #if AXIS_HAS_SPI(E5)
-      SET_CS_PIN(E5);
-    #endif
-  }
-#endif // TMC_HAS_SPI
 
 template<typename TMC>
 static bool test_connection(TMC &st) {
@@ -1118,7 +1162,291 @@ void test_tmc_connection(const bool test_x, const bool test_y, const bool test_z
     #endif
   }
 
-  if (axis_connection) ui.set_status_P(GET_TEXT(MSG_ERROR_TMC));
+  if (axis_connection) {
+	  bsod(GET_TEXT(MSG_ERROR_TMC));
+  }
 }
 
-#endif // HAS_TRINAMIC
+static void initial_test_tmc_connection(AxisEnum axis) {
+  auto& stepper = stepper_axis(axis);
+  const auto reg = stepper.DRV_STATUS();
+  if(reg == 0xFFFFFFFF || reg == 0) {
+    bsod("TMC error %i (0x%08lx)", (int)axis, (unsigned long)reg);
+  }
+}
+
+void initial_test_tmc_connection() {
+  #if AXIS_IS_TMC(X)
+  initial_test_tmc_connection(X_AXIS);
+  #endif
+  #if AXIS_IS_TMC(Y)
+  initial_test_tmc_connection(Y_AXIS);
+  #endif
+  #if AXIS_IS_TMC(Z)
+  initial_test_tmc_connection(Z_AXIS);
+  #endif
+  #if AXIS_IS_TMC(E0)
+  initial_test_tmc_connection(E0_AXIS);
+  #endif
+}
+
+#if HAS_DRIVER(TMC2130)
+static TMC2130Stepper *pStep[4] = { nullptr, nullptr, nullptr, nullptr };
+#elif HAS_DRIVER(TMC2209)
+static TMC2209Stepper *pStep[4] = { nullptr, nullptr, nullptr, nullptr };
+#endif
+
+tmc_reg_t tmc_reg_map[] = {
+    /*  { cmd_name, reg_adr, write, read }, */
+    { "gconf", 0x00, true, true },
+    { "gstat", 0x01, true, true },
+#if HAS_DRIVER(TMC2130)
+    { "ioin", 0x04, false, true },
+#endif
+#if HAS_DRIVER(TMC2209)
+    { "ifcnt", 0x02, false, true },
+    { "slaveconf", 0x03, true, false },
+    { "otp_prog", 0x04, true, false },
+    { "otp_read", 0x05, false, true },
+    { "ioin", 0x06, false, true },
+    { "factory_conf", 0x07, true, true },
+#endif
+    { "ihold_irun", 0x10, true, false },
+    { "tpower_down", 0x11, true, false },
+    { "tstep", 0x12, false, true },
+    { "tpwmthrs", 0x13, true, false },
+    { "tcoolthrs", 0x14, true, false },
+#if HAS_DRIVER(TMC2130)
+    { "thigh", 0x15, true, false },
+#endif
+#if HAS_DRIVER(TMC2209)
+    { "vactual", 0x22, true, false },
+#endif
+#if HAS_DRIVER(TMC2130)
+    { "xdirect", 0x2D, true, true },
+    { "vdcmin", 0x33, true, false },
+#endif
+#if HAS_DRIVER(TMC2209)
+    { "sgthrs", 0x40, true, false },
+    { "sg_result", 0x41, false, true },
+    { "coolconf", 0x42, true, false },
+#endif
+#if HAS_DRIVER(TMC2130)
+    { "mslut0", 0x60, true, false },
+    { "mslut1", 0x61, true, false },
+    { "mslut2", 0x62, true, false },
+    { "mslut3", 0x63, true, false },
+    { "mslut4", 0x64, true, false },
+    { "mslut5", 0x65, true, false },
+    { "mslut6", 0x66, true, false },
+    { "mslut7", 0x67, true, false },
+    { "mslutsel", 0x68, true, false },
+    { "mslutstart", 0x69, true, false },
+#endif
+    { "mscnt", 0x6A, false, true },
+    { "mscuract", 0x6B, false, true },
+    { "chopconf", 0x6C, true, true },
+#if HAS_DRIVER(TMC2130)
+    { "coolconf", 0x6D, true, false },
+    { "dcctrl", 0x6D, true, false },
+#endif
+    { "drv_status", 0x6F, false, true },
+    { "pwmconf", 0x70, true, true },
+    { "pwm_scale", 0x71, false, true },
+#if HAS_DRIVER(TMC2209)
+    { "pwm_auto", 0x72, false, true },
+#endif
+#if HAS_DRIVER(TMC2130)
+    { "encm_ctrl", 0x72, true, false },
+    { "lost_steps", 0x73, false, true },
+#endif
+    { NULL, 0x00, false, false },
+};
+
+#ifdef HAS_TMC_WAVETABLE
+void tmc_enable_wavetable([[maybe_unused]] bool X, [[maybe_unused]] bool Y, [[maybe_unused]] bool Z) {
+    if (Y) {
+        pStep[Y_AXIS]->write(0x69, 0x00f80000);
+        pStep[Y_AXIS]->write(0x60, 0x56ad6b6a);
+        pStep[Y_AXIS]->write(0x61, 0x54aaaaab);
+        pStep[Y_AXIS]->write(0x62, 0x44449252);
+        pStep[Y_AXIS]->write(0x63, 0x00020208);
+        pStep[Y_AXIS]->write(0x64, 0xefe00000);
+        pStep[Y_AXIS]->write(0x65, 0xadbb777b);
+        pStep[Y_AXIS]->write(0x66, 0x252aaab5);
+        pStep[Y_AXIS]->write(0x67, 0x00810889);
+        pStep[Y_AXIS]->write(0x68, 0xff940159);
+    }
+    if (X) {
+        pStep[X_AXIS]->write(0x69, 0x00f80000);
+        pStep[X_AXIS]->write(0x60, 0x5ad6dada);
+        pStep[X_AXIS]->write(0x61, 0x4a9556ab);
+        pStep[X_AXIS]->write(0x62, 0x84444929);
+        pStep[X_AXIS]->write(0x63, 0x00001020);
+        pStep[X_AXIS]->write(0x64, 0xbefe0000);
+        pStep[X_AXIS]->write(0x65, 0x5b6eeeef);
+        pStep[X_AXIS]->write(0x66, 0x4a55556b);
+        pStep[X_AXIS]->write(0x67, 0x00810892);
+        pStep[X_AXIS]->write(0x68, 0xff900159);
+    }
+    if (Z) {
+        pStep[Z_AXIS]->write(0x69, 0x00f80000);
+        pStep[Z_AXIS]->write(0x60, 0xb77bbdf6);
+        pStep[Z_AXIS]->write(0x61, 0xa5556b6d);
+        pStep[Z_AXIS]->write(0x62, 0x10210924);
+        pStep[Z_AXIS]->write(0x63, 0x7f800000);
+        pStep[Z_AXIS]->write(0x64, 0xf77befbf);
+        pStep[Z_AXIS]->write(0x65, 0xdbb76eee);
+        pStep[Z_AXIS]->write(0x66, 0x55555ada);
+        pStep[Z_AXIS]->write(0x67, 0x0102224a);
+        pStep[Z_AXIS]->write(0x68, 0xff760159);
+    }
+}
+
+void tmc_disable_wavetable([[maybe_unused]] bool X, [[maybe_unused]] bool Y, [[maybe_unused]] bool Z) {
+    if (Y) {
+        pStep[Y_AXIS]->write(0x69, 0x00F70000);
+        pStep[Y_AXIS]->write(0x60, 0xAAAAB554);
+        pStep[Y_AXIS]->write(0x61, 0x4A9554AA);
+        pStep[Y_AXIS]->write(0x62, 0x24492929);
+        pStep[Y_AXIS]->write(0x63, 0x10104222);
+        pStep[Y_AXIS]->write(0x64, 0xFBFFFFFF);
+        pStep[Y_AXIS]->write(0x65, 0xB5BB777D);
+        pStep[Y_AXIS]->write(0x66, 0x49295556);
+        pStep[Y_AXIS]->write(0x67, 0x00404222);
+        pStep[Y_AXIS]->write(0x68, 0xFFFF8056);
+    }
+    if (X) {
+        pStep[X_AXIS]->write(0x69, 0x00F70000);
+        pStep[X_AXIS]->write(0x60, 0xAAAAB554);
+        pStep[X_AXIS]->write(0x61, 0x4A9554AA);
+        pStep[X_AXIS]->write(0x62, 0x24492929);
+        pStep[X_AXIS]->write(0x63, 0x10104222);
+        pStep[X_AXIS]->write(0x64, 0xFBFFFFFF);
+        pStep[X_AXIS]->write(0x65, 0xB5BB777D);
+        pStep[X_AXIS]->write(0x66, 0x49295556);
+        pStep[X_AXIS]->write(0x67, 0x00404222);
+        pStep[X_AXIS]->write(0x68, 0xFFFF8056);
+    }
+    if (Z) {
+        pStep[Z_AXIS]->write(0x69, 0x00F70000);
+        pStep[Z_AXIS]->write(0x60, 0xAAAAB554);
+        pStep[Z_AXIS]->write(0x61, 0x4A9554AA);
+        pStep[Z_AXIS]->write(0x62, 0x24492929);
+        pStep[Z_AXIS]->write(0x63, 0x10104222);
+        pStep[Z_AXIS]->write(0x64, 0xFBFFFFFF);
+        pStep[Z_AXIS]->write(0x65, 0xB5BB777D);
+        pStep[Z_AXIS]->write(0x66, 0x49295556);
+        pStep[Z_AXIS]->write(0x67, 0x00404222);
+        pStep[Z_AXIS]->write(0x68, 0xFFFF8056);
+    }
+}
+#endif // HAS_TMC_WAVETABLE
+
+void init_tmc() {
+    tmc_serial_lock_init();
+
+    // pointers to TMCStepper instances
+#if AXIS_IS_TMC(X)
+    pStep[X_AXIS] = &stepperX;
+    pStep[X_AXIS]->TCOOLTHRS(400);
+#endif
+#if AXIS_IS_TMC(Y)
+    pStep[Y_AXIS] = &stepperY;
+    pStep[Y_AXIS]->TCOOLTHRS(400);
+#endif
+#if AXIS_IS_TMC(Z)
+    pStep[Z_AXIS] = &stepperZ;
+    pStep[Z_AXIS]->TCOOLTHRS(400);
+#endif
+#if AXIS_IS_TMC(E0)
+    pStep[E0_AXIS] = &stepperE0;
+    pStep[E_AXIS]->TCOOLTHRS(400);
+#endif
+#if HAS_DRIVER(TMC2209)
+    pStep[X_AXIS]->SLAVECONF(0x300);
+    pStep[Y_AXIS]->SLAVECONF(0x300);
+    pStep[Z_AXIS]->SLAVECONF(0x300);
+    pStep[E_AXIS]->SLAVECONF(0x300);
+#endif
+}
+
+#if !BOARD_IS_DWARF()
+static char tmc_slave_addr_to_axis_character([[maybe_unused]] uint8_t slave_addr) {
+    return '?'; // TODO
+}
+
+static char should_log_register_operation(uint8_t reg_addr) {
+    if (reg_addr == 0x02 /*IFCNT*/ || reg_addr == 0x41 /*SG_RESULT*/) {
+        return false;
+    } else {
+        return true;
+    }
+}
+
+static const char *tmc_reg_addr_to_name(uint8_t addr) {
+    tmc_reg_t *tmc_reg = tmc_reg_map;
+    while (tmc_reg->cmd_name != NULL) {
+        if (tmc_reg->reg_adr == addr) {
+            return tmc_reg->cmd_name;
+        }
+        tmc_reg++;
+    }
+    return "UNKNOWN";
+}
+
+void tmc_register_write_hook(uint8_t slave_addr, uint8_t reg_addr, uint32_t val) {
+    if (!should_log_register_operation(reg_addr)) {
+        return;
+    }
+    METRIC_DEF(metric_write, "tmc_write", METRIC_VALUE_CUSTOM, 0, METRIC_ENABLED);
+    metric_record_custom(&metric_write, ",ax=%c reg=%ui,regn=\"%s\",value=%" PRIu32 "i",
+        tmc_slave_addr_to_axis_character(slave_addr), reg_addr, tmc_reg_addr_to_name(reg_addr), val);
+}
+
+void tmc_register_read_hook(uint8_t slave_addr, uint8_t reg_addr, uint32_t val) {
+    if (!should_log_register_operation(reg_addr)) {
+        return;
+    }
+    METRIC_DEF(metric_read, "tmc_read", METRIC_VALUE_CUSTOM, 0, METRIC_ENABLED);
+    metric_record_custom(&metric_read, ",ax=%c reg=%ui,regn=\"%s\",value=%" PRIu32 "i",
+        tmc_slave_addr_to_axis_character(slave_addr), reg_addr, tmc_reg_addr_to_name(reg_addr), val);
+}
+#endif
+
+#if HAS_PLANNER()
+// this function performs stallguard sample for single axis
+// return value contain bitmask of sampled axis, in case of nonzero return value this call take 5ms
+//  Now we are using stepper.axis_is_moving and value is set to zero for stopped motor,
+//  right way is reading tstep and comparing it to TCOOLTHRS, but it takes time (read register).
+//  Using stepper.axis_is_moving is simple but in some cases we get bad samples (tstep > TCOOLTHRS).
+//  Maybe we can improve this by calculating tstep from stepper variables.
+extern uint16_t tmc_sg_result(uint8_t axis) {
+    return 0;
+    if (stepper.axis_is_moving((AxisEnum)axis)) {
+  #if HAS_DRIVER(TMC2130)
+        return pStep[axis]->sg_result();
+  #elif HAS_DRIVER(TMC2209)
+        return pStep[axis]->SG_RESULT();
+  #else
+        return 0;
+  #endif
+    } else {
+        return 0;
+    }
+}
+#endif // HAS_PLANNER()
+
+bool tmc_check_coils(uint8_t axis) {
+    if (!pStep[axis]) {
+        return false;
+    }
+
+    const bool ola = pStep[axis]->ola();
+    const bool olb = pStep[axis]->olb();
+    const bool s2ga = pStep[axis]->s2ga();
+    const bool s2gb = pStep[axis]->s2gb();
+
+    // Yes, we could actually tell what is wrong. For now we are fine with boolean result.
+    return !ola && !olb && !s2ga && !s2gb;
+}

@@ -31,13 +31,26 @@
   #include "../../module/planner.h"
 #endif
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M218 - set hotend offset (in linear units)
+ *### M218: Get/Set hotend offset <a href="https://reprap.org/wiki/G-code#M218:_Set_Hotend_Offset">M218: Set Hotend Offset</a>
  *
- *   T<tool>
- *   X<xoffset>
- *   Y<yoffset>
- *   Z<zoffset>
+ *#### Usage
+ *
+ *    M218 [ X | Y | Z ]
+ *
+ *#### Parameters
+ *
+ *
+ * - `T` - Tool
+ * - `X` - X hotend offset
+ * - `Y` - Y hotend offset
+ * - `Z` - Z hotend offset
+ *
+ * Without parameters prints the current hotend offset(s)
  */
 void GcodeSuite::M218() {
 
@@ -67,5 +80,7 @@ void GcodeSuite::M218() {
       do_blocking_move_to_xy(current_position, planner.settings.max_feedrate_mm_s[X_AXIS]);
   #endif
 }
+
+/** @}*/
 
 #endif // HAS_HOTEND_OFFSET

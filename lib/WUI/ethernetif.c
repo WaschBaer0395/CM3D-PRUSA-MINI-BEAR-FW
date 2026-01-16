@@ -1,56 +1,9 @@
-/**
-  ******************************************************************************
-  * File Name          : ethernetif.c
-  * Description        : This file provides code for the configuration
-  *                      of the ethernetif.c MiddleWare.
-  ******************************************************************************
-  * This notice applies to any and all portions of this file
-  * that are not between comment pairs USER CODE BEGIN and
-  * USER CODE END. Other portions of this file, whether
-  * inserted by the user or by software development tools
-  * are owned by their respective copyright owners.
-  *
-  * Copyright (c) 2019 STMicroelectronics International N.V.
-  * All rights reserved.
-  *
-  * Redistribution and use in source and binary forms, with or without
-  * modification, are permitted, provided that the following conditions are met:
-  *
-  * 1. Redistribution of source code must retain the above copyright notice,
-  *    this list of conditions and the following disclaimer.
-  * 2. Redistributions in binary form must reproduce the above copyright notice,
-  *    this list of conditions and the following disclaimer in the documentation
-  *    and/or other materials provided with the distribution.
-  * 3. Neither the name of STMicroelectronics nor the names of other
-  *    contributors to this software may be used to endorse or promote products
-  *    derived from this software without specific written permission.
-  * 4. This software, including modifications and/or derivative works of this
-  *    software, must execute solely and exclusively on microcontroller or
-  *    microprocessor devices manufactured by or for STMicroelectronics.
-  * 5. Redistribution and use of this software other than as permitted under
-  *    this license is void and will automatically terminate your rights under
-  *    this license.
-  *
-  * THIS SOFTWARE IS PROVIDED BY STMICROELECTRONICS AND CONTRIBUTORS "AS IS"
-  * AND ANY EXPRESS, IMPLIED OR STATUTORY WARRANTIES, INCLUDING, BUT NOT
-  * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-  * PARTICULAR PURPOSE AND NON-INFRINGEMENT OF THIRD PARTY INTELLECTUAL PROPERTY
-  * RIGHTS ARE DISCLAIMED TO THE FULLEST EXTENT PERMITTED BY LAW. IN NO EVENT
-  * SHALL STMICROELECTRONICS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
-  * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-  * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
-  * OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-  * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-  * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
-  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-  *
-  ******************************************************************************
-  */
-
-/* Includes ------------------------------------------------------------------*/
-#include "main.h"
+#include <inttypes.h>
+#include <buddy/main.h>
+#include "metric.h"
+#include "pbuf_rx.h"
+#include "wui.h"
 #include "lwip/opt.h"
-
 #include "lwip/timeouts.h"
 #include "netif/ethernet.h"
 #include "netif/etharp.h"
@@ -58,28 +11,22 @@
 #include "ethernetif.h"
 #include <string.h>
 #include "cmsis_os.h"
-/* Within 'USER CODE' section, code will be kept by default at each generation */
-/* USER CODE BEGIN 0 */
 #include "lwip/netifapi.h"
 #include "wui_api.h"
-#include "otp.h"
 #include <stdbool.h>
-/* USER CODE END 0 */
+#include "buddy/priorities_config.h"
 
-/* Private define ------------------------------------------------------------*/
+// Needs to live in a cpp file :-(
+void log_dropped_packet_rx(size_t len);
+
 /* The time to block waiting for input. */
 #define TIME_WAITING_FOR_INPUT (portMAX_DELAY)
 /* Stack size of the interface thread */
-#define INTERFACE_THREAD_STACK_SIZE (350)
+#define INTERFACE_THREAD_STACK_SIZE (160)
 /* Network interface name */
 #define IFNAME0 'P'
 #define IFNAME1 'R'
 
-/* USER CODE BEGIN 1 */
-
-/* USER CODE END 1 */
-
-/* Private variables ---------------------------------------------------------*/
 #if defined(__ICCARM__) /*!< IAR Compiler */
     #pragma data_alignment = 4
 #endif
@@ -100,41 +47,30 @@ __ALIGN_BEGIN uint8_t Rx_Buff[ETH_RXBUFNB][ETH_RX_BUF_SIZE] __ALIGN_END; /* Ethe
 #endif
 __ALIGN_BEGIN uint8_t Tx_Buff[ETH_TXBUFNB][ETH_TX_BUF_SIZE] __ALIGN_END; /* Ethernet Transmit Buffer */
 
-/* USER CODE BEGIN 2 */
+METRIC_DEF(metric_eth_out, "eth_out", METRIC_VALUE_CUSTOM, 1000, METRIC_ENABLED);
+METRIC_DEF(metric_eth_in, "eth_in", METRIC_VALUE_CUSTOM, 1000, METRIC_ENABLED);
 
-/* USER CODE END 2 */
-
-/* Semaphore to signal incoming packets */
-osSemaphoreId s_xSemaphore = NULL;
 /* Global Ethernet handle */
 ETH_HandleTypeDef heth;
-
-/* USER CODE BEGIN 3 */
-
-/* USER CODE END 3 */
-
-/* Private functions ---------------------------------------------------------*/
 
 void HAL_ETH_MspInit(ETH_HandleTypeDef *ethHandle) {
     GPIO_InitTypeDef GPIO_InitStruct;
     if (ethHandle->Instance == ETH) {
-        /* USER CODE BEGIN ETH_MspInit 0 */
-
-        /* USER CODE END ETH_MspInit 0 */
         /* Enable Peripheral clock */
         __HAL_RCC_ETH_CLK_ENABLE();
 
-        /**ETH GPIO Configuration
-    PC1     ------> ETH_MDC
-    PA1     ------> ETH_REF_CLK
-    PA2     ------> ETH_MDIO
-    PA7     ------> ETH_CRS_DV
-    PC4     ------> ETH_RXD0
-    PC5     ------> ETH_RXD1
-    PB11     ------> ETH_TX_EN
-    PB12     ------> ETH_TXD0
-    PB13     ------> ETH_TXD1
-    */
+        /**
+         * ETH GPIO Configuration
+         * PC1     ------> ETH_MDC
+         * PA1     ------> ETH_REF_CLK
+         * PA2     ------> ETH_MDIO
+         * PA7     ------> ETH_CRS_DV
+         * PC4     ------> ETH_RXD0
+         * PC5     ------> ETH_RXD1
+         * PB11     ------> ETH_TX_EN
+         * PB12     ------> ETH_TXD0
+         * PB13     ------> ETH_TXD1
+         */
         GPIO_InitStruct.Pin = GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5;
         GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -157,33 +93,28 @@ void HAL_ETH_MspInit(ETH_HandleTypeDef *ethHandle) {
         HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
         /* Peripheral interrupt init */
-        HAL_NVIC_SetPriority(ETH_IRQn, 5, 0);
+        HAL_NVIC_SetPriority(ETH_IRQn, ISR_PRIORITY_DEFAULT, 0);
         HAL_NVIC_EnableIRQ(ETH_IRQn);
-        /* USER CODE BEGIN ETH_MspInit 1 */
-
-        /* USER CODE END ETH_MspInit 1 */
     }
 }
 
 void HAL_ETH_MspDeInit(ETH_HandleTypeDef *ethHandle) {
     if (ethHandle->Instance == ETH) {
-        /* USER CODE BEGIN ETH_MspDeInit 0 */
-
-        /* USER CODE END ETH_MspDeInit 0 */
         /* Peripheral clock disable */
         __HAL_RCC_ETH_CLK_DISABLE();
 
-        /**ETH GPIO Configuration
-    PC1     ------> ETH_MDC
-    PA1     ------> ETH_REF_CLK
-    PA2     ------> ETH_MDIO
-    PA7     ------> ETH_CRS_DV
-    PC4     ------> ETH_RXD0
-    PC5     ------> ETH_RXD1
-    PB11     ------> ETH_TX_EN
-    PB12     ------> ETH_TXD0
-    PB13     ------> ETH_TXD1
-    */
+        /**
+         * ETH GPIO Configuration
+         * PC1     ------> ETH_MDC
+         * PA1     ------> ETH_REF_CLK
+         * PA2     ------> ETH_MDIO
+         * PA7     ------> ETH_CRS_DV
+         * PC4     ------> ETH_RXD0
+         * PC5     ------> ETH_RXD1
+         * PB11     ------> ETH_TX_EN
+         * PB12     ------> ETH_TXD0
+         * PB13     ------> ETH_TXD1
+         */
         HAL_GPIO_DeInit(GPIOC, GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5);
 
         HAL_GPIO_DeInit(GPIOA, GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_7);
@@ -192,23 +123,18 @@ void HAL_ETH_MspDeInit(ETH_HandleTypeDef *ethHandle) {
 
         /* Peripheral interrupt Deinit*/
         HAL_NVIC_DisableIRQ(ETH_IRQn);
-
-        /* USER CODE BEGIN ETH_MspDeInit 1 */
-
-        /* USER CODE END ETH_MspDeInit 1 */
     }
 }
 
 /**
-  * @brief  Ethernet Rx Transfer completed callback
-  * @param  heth: ETH handle
-  * @retval None
-  */
+ * @brief  Ethernet Rx Transfer completed callback
+ * @param  heth: ETH handle
+ * @retval None
+ */
 void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth) {
-    osSemaphoreRelease(s_xSemaphore);
+    notify_ethernet_data();
 }
 
-/* USER CODE BEGIN 4 */
 uint32_t ethernetif_link(const void *arg) {
     uint32_t phyreg = 0U;
 
@@ -216,11 +142,10 @@ uint32_t ethernetif_link(const void *arg) {
     return (phyreg & PHY_LINKED_STATUS) == PHY_LINKED_STATUS ? 1 : 0;
 }
 
-/* USER CODE END 4 */
-
 /*******************************************************************************
                        LL Driver Interface ( LwIP stack --> ETH)
 *******************************************************************************/
+
 /**
  * In this function, the hardware should be initialized.
  * Called from ethernetif_init().
@@ -230,7 +155,6 @@ uint32_t ethernetif_link(const void *arg) {
  */
 static void low_level_init(struct netif *netif) {
     uint32_t regvalue = 0;
-    HAL_StatusTypeDef hal_eth_init_status;
 
     /* Init ETH */
 
@@ -238,21 +162,16 @@ static void low_level_init(struct netif *netif) {
     heth.Init.AutoNegotiation = ETH_AUTONEGOTIATION_ENABLE;
     heth.Init.PhyAddress = LAN8742A_PHY_ADDRESS;
     // set  mac address from OTP memory
-    heth.Init.MACAddr = (uint8_t *)OTP_MAC_ADDRESS_ADDR;
+    heth.Init.MACAddr = ethernetif_get_mac();
     heth.Init.RxMode = ETH_RXINTERRUPT_MODE;
-    heth.Init.ChecksumMode = ETH_CHECKSUM_BY_HARDWARE;
+    // Hardware checksum seems to reset correctly computed ICMP checksums to 0
+    // Anyway we don't need it, since we compute checksums in software because of the ESP
+    // TODO: LWIP now supports setting checksum policy per device.
+    heth.Init.ChecksumMode = ETH_CHECKSUM_BY_SOFTWARE;
     heth.Init.MediaInterface = ETH_MEDIA_INTERFACE_RMII;
 
-    /* USER CODE BEGIN MACADDRESS */
+    HAL_ETH_Init(&heth);
 
-    /* USER CODE END MACADDRESS */
-
-    hal_eth_init_status = HAL_ETH_Init(&heth);
-
-    if (hal_eth_init_status == HAL_OK) {
-        /* Set netif link flag */
-        netif->flags |= NETIF_FLAG_LINK_UP;
-    }
     /* Initialize Tx Descriptors list: Chain Mode */
     HAL_ETH_DMATxDescListInit(&heth, DMATxDscrTab, &Tx_Buff[0][0], ETH_TXBUFNB);
 
@@ -283,19 +202,8 @@ static void low_level_init(struct netif *netif) {
     netif->flags |= NETIF_FLAG_BROADCAST;
     #endif /* LWIP_ARP */
 
-    /* create a binary semaphore used for informing ethernetif of frame reception */
-    osSemaphoreDef(SEM);
-    s_xSemaphore = osSemaphoreCreate(osSemaphore(SEM), 1);
-
-    /* create the task that handles the ETH_MAC */
-    osThreadDef(EthIf, ethernetif_input, osPriorityRealtime, 0, INTERFACE_THREAD_STACK_SIZE);
-    osThreadCreate(osThread(EthIf), netif);
     /* Enable MAC and DMA transmission and reception */
     HAL_ETH_Start(&heth);
-
-    /* USER CODE BEGIN PHY_PRE_CONFIG */
-
-    /* USER CODE END PHY_PRE_CONFIG */
 
     /* Read Register Configuration */
     HAL_ETH_ReadPHYRegister(&heth, PHY_ISFR, &regvalue);
@@ -307,15 +215,7 @@ static void low_level_init(struct netif *netif) {
     /* Read Register Configuration */
     HAL_ETH_ReadPHYRegister(&heth, PHY_ISFR, &regvalue);
 
-    /* USER CODE BEGIN PHY_POST_CONFIG */
-
-    /* USER CODE END PHY_POST_CONFIG */
-
 #endif /* LWIP_ARP || LWIP_ETHERNET */
-
-    /* USER CODE BEGIN LOW_LEVEL_INIT */
-
-    /* USER CODE END LOW_LEVEL_INIT */
 }
 
 /**
@@ -333,7 +233,6 @@ static void low_level_init(struct netif *netif) {
  *       to become availale since the stack doesn't retry to send a packet
  *       dropped because of memory failure (except for the TCP timers).
  */
-
 static err_t low_level_output(struct netif *netif, struct pbuf *p) {
     err_t errval;
     struct pbuf *q;
@@ -391,6 +290,11 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p) {
 
     errval = ERR_OK;
 
+    // record metrics
+    static uint32_t bytes_sent_count = 0;
+    bytes_sent_count += framelength;
+    metric_record_custom(&metric_eth_out, " sent=%" PRIu32 "i", bytes_sent_count);
+
 error:
 
     /* When Transmit Underflow flag is set, clear it and issue a Transmit Poll Demand to resume transmission */
@@ -411,7 +315,7 @@ error:
  * @param netif the lwip network interface structure for this ethernetif
  * @return a pbuf filled with the received packet (including MAC header)
  *         NULL on memory error
-   */
+ */
 static struct pbuf *low_level_input(struct netif *netif) {
     struct pbuf *p = NULL;
     struct pbuf *q = NULL;
@@ -424,16 +328,25 @@ static struct pbuf *low_level_input(struct netif *netif) {
     uint32_t i = 0;
 
     /* get received frame */
-    if (HAL_ETH_GetReceivedFrame_IT(&heth) != HAL_OK)
+    if (HAL_ETH_GetReceivedFrame_IT(&heth) != HAL_OK) {
         return NULL;
+    }
 
     /* Obtain the size of the packet and put it into the "len" variable. */
     len = heth.RxFrameInfos.length;
     buffer = (uint8_t *)heth.RxFrameInfos.buffer;
 
+    // record metrics
+    static uint32_t bytes_received_count = 0;
+    bytes_received_count += len;
+    metric_record_custom(&metric_eth_in, " recv=%" PRIu32 "i", bytes_received_count);
+
     if (len > 0) {
         /* We allocate a pbuf chain of pbufs from the Lwip buffer pool */
-        p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
+        p = pbuf_alloc_rx(len);
+        if (p == NULL) {
+            log_dropped_packet_rx(len);
+        }
     }
 
     if (p != NULL) {
@@ -484,31 +397,16 @@ static struct pbuf *low_level_input(struct netif *netif) {
     return p;
 }
 
-/**
- * This function should be called when a packet is ready to be read
- * from the interface. It uses the function low_level_input() that
- * should handle the actual reception of bytes from the network
- * interface. Then the type of the received packet is determined and
- * the appropriate input function is called.
- *
- * @param netif the lwip network interface structure for this ethernetif
- */
-void ethernetif_input(void const *argument) {
+void ethernetif_input_once(struct netif *netif) {
     struct pbuf *p;
-    struct netif *netif = (struct netif *)argument;
-
-    for (;;) {
-        if (osSemaphoreWait(s_xSemaphore, TIME_WAITING_FOR_INPUT) == osOK) {
-            do {
-                p = low_level_input(netif);
-                if (p != NULL) {
-                    if (netif->input(p, netif) != ERR_OK) {
-                        pbuf_free(p);
-                    }
-                }
-            } while (p != NULL);
+    do {
+        p = low_level_input(netif);
+        if (p != NULL) {
+            if (netif->input(p, netif) != ERR_OK) {
+                pbuf_free(p);
+            }
         }
-    }
+    } while (p != NULL);
 }
 
 #if !LWIP_ARP
@@ -521,10 +419,6 @@ void ethernetif_input(void const *argument) {
 static err_t low_level_output_arp_off(struct netif *netif, struct pbuf *q, const ip4_addr_t *ipaddr) {
     err_t errval;
     errval = ERR_OK;
-
-    /* USER CODE BEGIN 5 */
-
-    /* USER CODE END 5 */
 
     return errval;
 }
@@ -547,15 +441,15 @@ err_t ethernetif_init(struct netif *netif) {
 
 #if LWIP_NETIF_HOSTNAME
     /* Initialize interface hostname */
-    netif->hostname = "MINI";
+    netif->hostname = "";
 #endif /* LWIP_NETIF_HOSTNAME */
 
     netif->name[0] = IFNAME0;
     netif->name[1] = IFNAME1;
     /* We directly use etharp_output() here to save a function call.
-   * You can instead declare your own function an call etharp_output()
-   * from it if you have to do some checks before sending (e.g. if link
-   * is available...) */
+     * You can instead declare your own function an call etharp_output()
+     * from it if you have to do some checks before sending (e.g. if link
+     * is available...) */
 
 #if LWIP_IPV4
     #if LWIP_ARP || LWIP_ETHERNET
@@ -565,8 +459,8 @@ err_t ethernetif_init(struct netif *netif) {
     /* The user should write ist own code in low_level_output_arp_off function */
     netif->output = low_level_output_arp_off;
         #endif /* LWIP_ARP */
-    #endif     /* LWIP_ARP || LWIP_ETHERNET */
-#endif         /* LWIP_IPV4 */
+    #endif /* LWIP_ARP || LWIP_ETHERNET */
+#endif /* LWIP_IPV4 */
 
 #if LWIP_IPV6
     netif->output_ip6 = ethip6_output;
@@ -580,41 +474,33 @@ err_t ethernetif_init(struct netif *netif) {
     return ERR_OK;
 }
 
-/* USER CODE BEGIN 6 */
-
 /**
-* @brief  Returns the current time in milliseconds
-*         when LWIP_TIMERS == 1 and NO_SYS == 1
-* @param  None
-* @retval Time
-*/
+ * @brief  Returns the current time in milliseconds
+ *         when LWIP_TIMERS == 1 and NO_SYS == 1
+ * @param  None
+ * @retval Time
+ */
 u32_t sys_jiffies(void) {
     return HAL_GetTick();
 }
 
 /**
-* @brief  Returns the current time in milliseconds
-*         when LWIP_TIMERS == 1 and NO_SYS == 1
-* @param  None
-* @retval Time
-*/
+ * @brief  Returns the current time in milliseconds
+ *         when LWIP_TIMERS == 1 and NO_SYS == 1
+ * @param  None
+ * @retval Time
+ */
 u32_t sys_now(void) {
     return HAL_GetTick();
 }
 
-/* USER CODE END 6 */
-
-/* USER CODE BEGIN 7 */
-
-/* USER CODE END 7 */
-
 #if LWIP_NETIF_LINK_CALLBACK
 /**
-  * @brief  Link callback function, this function is called on change of link status
-  *         to update low level driver configuration.
-* @param  netif: The network interface
-  * @retval None
-  */
+ * @brief  Link callback function, this function is called on change of link status
+ *         to update low level driver configuration.
+ * @param  netif: The network interface
+ * @retval None
+ */
 void ethernetif_update_config(struct netif *netif) {
     __IO uint32_t tickstart = 0;
     uint32_t regvalue = 0;
@@ -676,28 +562,20 @@ void ethernetif_update_config(struct netif *netif) {
         HAL_ETH_Start(&heth);
     } else {
         /* Stop MAC interface */
-        //TODO:After a few ETH_Stop, device don't want to start ?
-        // HAL_ETH_Stop(&heth);
+        HAL_ETH_Stop(&heth);
     }
 
     ethernetif_notify_conn_changed(netif);
 }
 
-/* USER CODE BEGIN 8 */
 /**
-  * @brief  This function notify user about link status changement.
-  * @param  netif: the network interface
-  * @retval None
-  */
+ * @brief  This function notify user about link status changement.
+ * @param  netif: the network interface
+ * @retval None
+ */
 __weak void ethernetif_notify_conn_changed(struct netif *netif) {
     /* NOTE : This is function could be implemented in user file
             when the callback is needed,
   */
 }
-/* USER CODE END 8 */
 #endif /* LWIP_NETIF_LINK_CALLBACK */
-
-/* USER CODE BEGIN 9 */
-
-/* USER CODE END 9 */
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

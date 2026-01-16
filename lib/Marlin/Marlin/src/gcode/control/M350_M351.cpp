@@ -22,13 +22,32 @@
 
 #include "../../inc/MarlinConfig.h"
 
-#if HAS_MICROSTEPS
+#if HAS_DRIVER(TMC2130)
 
 #include "../gcode.h"
 #include "../../module/stepper.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M350: Set axis microstepping modes. S sets mode for all drivers.
+ *### M350: Get/Set axis microstepping modes <a href="https://reprap.org/wiki/G-code#M350:_Set_microstepping_mode">M350: Set microstepping mode</a>
+ *
+ *#### Usage
+ *
+ *    M350 [ X | Y | Z | E | S | B ]
+ *
+ *#### Parameters
+ *
+ * - `X` - X axis
+ * - `Y` - Y axis
+ * - `Z` - Z axis
+ * - `E` - E axis
+ * - `S` - Mode for all drivers
+ * - `B` - Set stepping mode for Extruder 1
+ *
+ * Without parameters prints the current microstepping modes
  *
  * Warning: Steps-per-unit remains unchanged.
  */
@@ -39,26 +58,6 @@ void GcodeSuite::M350() {
   stepper.microstep_readings();
 }
 
-/**
- * M351: Toggle MS1 MS2 pins directly with axis codes X Y Z E B
- *       S# determines MS1, MS2 or MS3, X# sets the pin high/low.
- */
-void GcodeSuite::M351() {
-  if (parser.seenval('S')) switch (parser.value_byte()) {
-    case 1:
-      LOOP_XYZE(i) if (parser.seenval(axis_codes[i])) stepper.microstep_ms(i, parser.value_byte(), -1, -1);
-      if (parser.seenval('B')) stepper.microstep_ms(4, parser.value_byte(), -1, -1);
-      break;
-    case 2:
-      LOOP_XYZE(i) if (parser.seenval(axis_codes[i])) stepper.microstep_ms(i, -1, parser.value_byte(), -1);
-      if (parser.seenval('B')) stepper.microstep_ms(4, -1, parser.value_byte(), -1);
-      break;
-    case 3:
-      LOOP_XYZE(i) if (parser.seenval(axis_codes[i])) stepper.microstep_ms(i, -1, -1, parser.value_byte());
-      if (parser.seenval('B')) stepper.microstep_ms(4, -1, -1, parser.value_byte());
-      break;
-  }
-  stepper.microstep_readings();
-}
+/** @}*/
 
-#endif // HAS_MICROSTEPS
+#endif // HAS_DRIVER(TMC2130)

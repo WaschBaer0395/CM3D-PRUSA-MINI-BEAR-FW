@@ -51,16 +51,30 @@ void M217_report(const bool eeprom=false) {
   SERIAL_EOL();
 }
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M217 - Set SINGLENOZZLE toolchange parameters
+ *### M217: Set SINGLENOZZLE toolchange parameters <a href="https://reprap.org/wiki/G-code#M217:_Toolchange_Parameters">M217: Toolchange Parameters</a>
  *
- *  S[linear]   Swap length
- *  E[linear]   Purge length
- *  P[linear/m] Prime speed
- *  R[linear/m] Retract speed
- *  X[linear]   Park X (Requires TOOLCHANGE_PARK)
- *  Y[linear]   Park Y (Requires TOOLCHANGE_PARK)
- *  Z[linear]   Z Raise
+ * Only MK3.5/S, MK3.9/S, MK4/S with MMU and XL
+ *
+ *#### Usage
+ *
+ *    M [ Z | X | Y | S | E | P | R |]
+ *
+ *#### Parameters
+ *
+ *  - `Z` - Z Raise
+ *  - `X` - Park X (not active)(Requires TOOLCHANGE_PARK)
+ *  - `Y` - Park Y (not active)(Requires TOOLCHANGE_PARK)
+ *  - `S` - Swap length (not active) (Requires TOOLCHANGE_FILAMENT_SWAP)
+ *  - `E` - Purge length (not active) (Requires TOOLCHANGE_FILAMENT_SWAP)
+ *  - `P` - Prime speed (not active) (Requires TOOLCHANGE_FILAMENT_SWAP)
+ *  - `R` - Retract speed (not active) (Requires TOOLCHANGE_FILAMENT_SWAP)
+ *
+ * Without parameters prints the current Z Raise
  */
 void GcodeSuite::M217() {
 
@@ -97,5 +111,7 @@ void GcodeSuite::M217() {
 
   if (!parser.seen(SPR_PARAM XY_PARAM "Z")) M217_report();
 }
+
+/** @}*/
 
 #endif // EXTRUDERS > 1

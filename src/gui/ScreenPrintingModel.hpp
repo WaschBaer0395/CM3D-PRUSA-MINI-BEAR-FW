@@ -1,36 +1,66 @@
-//ScreenPrintingModel.hpp
+/**
+ * @file ScreenPrintingModel.hpp
+ */
 #pragma once
 
 #include "IScreenPrinting.hpp"
 #include "gui.hpp"
 #include "window_header.hpp"
-#include "status_footer.h"
-#include "resource.h"
+#include "status_footer.hpp"
+#include <utility_extensions.hpp>
 
-struct btn_resource {
-    uint16_t ico;
-    const char *txt;
-};
-
-static constexpr btn_resource res_tune = { IDR_PNG_settings_58px, N_("Tune") };
-static constexpr btn_resource res_pause = { IDR_PNG_pause_58px, (const char *)(N_("Pause")) };
-static constexpr btn_resource res_stop = { IDR_PNG_stop_58px, N_("Stop") };
-
-class ScreenPrintingModel : public AddSuperWindow<IScreenPrinting> {
+class ScreenPrintingModel : public IScreenPrinting {
 protected:
-    struct btn {
-        window_icon_button_t ico;
-        window_text_t txt;
+    enum class BtnSocket {
+        Left = 0,
+        Middle,
+        Right,
+        _count,
+        _last = _count - 1,
+    };
+    static constexpr size_t socket_count = std::to_underlying(BtnSocket::_count);
+
+    enum class BtnRes {
+        Settings = 0,
+        Pause,
+        Stop,
+        Resume,
+        Home,
+        Reprint,
+        Disconnect,
+        SetReady,
+        _count,
+        _last = _count - 1,
     };
 
-    btn btn_tune;
-    btn btn_pause;
-    btn btn_stop;
+    enum class LabelRes {
+        Settings = 0,
+        Pause,
+        Pausing,
+        Stop,
+        Resume,
+        Resuming,
+        Reheating,
+        Reprint,
+        Home,
+        Skip,
+        Disconnect,
+        SetReady,
+        _count,
+        _last = _count - 1,
+    };
 
-    void initBtnText(btn &ref_button); // could access just text, but accessing entire button is more general
-    void setIconAndLabel(btn &ref_button, const btn_resource &res);
-    void initAndSetIconAndLabel(btn &ref_button, const btn_resource &res);
+    WindowMultiIconButton buttons[socket_count];
+    window_text_t labels[socket_count];
+
+    Rect16 GetButtonRect(uint8_t idx);
+    Rect16 GetButtonLabelRect(uint8_t idx);
+    void SetButtonIconAndLabel(BtnSocket btn, BtnRes ico_res, LabelRes txt_res);
+    void SetButtonIcon(BtnSocket btn, BtnRes res);
+    void SetButtonLabel(BtnSocket btn, LabelRes res);
+    void DisableButton(BtnSocket btn);
+    void EnableButton(BtnSocket btn);
 
 public:
-    ScreenPrintingModel(string_view_utf8 caption);
+    ScreenPrintingModel(const string_view_utf8 &caption);
 };

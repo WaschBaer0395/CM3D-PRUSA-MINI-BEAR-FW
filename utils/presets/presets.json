@@ -1,0 +1,231 @@
+{
+    "$schema": "./presets_schema.json",
+    "presets": [
+        {
+            "name": "coreone",
+            "description": "Original Prusa CORE One",
+            "cacheVariables": {
+                "PRINTER": "COREONE",
+                "BOARD": "XBUDDY",
+                "XBUDDY_EXTENSION_BINARY_DIR": {
+                    "type": "FILEPATH",
+                    "value": "build-vscode-xbuddy-extension"
+                }
+            }
+        },
+        {
+            "name": "mini",
+            "description": "Original Prusa MINI",
+            "cacheVariables": {
+                "PRINTER": "MINI",
+                "BOARD": "BUDDY"
+            }
+        },
+        {
+            "name": "mini-en-cs",
+            "description": "Original Prusa MINI (EN & CS translation)",
+            "cacheVariables": {
+                "PRINTER": "MINI",
+                "BOARD": "BUDDY",
+                "TRANSLATIONS_LIST": "cs"
+            }
+        },
+        {
+            "name": "mini-en-de",
+            "description": "Original Prusa MINI (EN & DE translation)",
+            "cacheVariables": {
+                "PRINTER": "MINI",
+                "BOARD": "BUDDY",
+                "TRANSLATIONS_LIST": "de"
+            }
+        },
+        {
+            "name": "mini-en-es",
+            "description": "Original Prusa MINI (EN & ES translation)",
+            "cacheVariables": {
+                "PRINTER": "MINI",
+                "BOARD": "BUDDY",
+                "TRANSLATIONS_LIST": "es"
+            }
+        },
+        {
+            "name": "mini-en-fr",
+            "description": "Original Prusa MINI (EN & FR translation)",
+            "cacheVariables": {
+                "PRINTER": "MINI",
+                "BOARD": "BUDDY",
+                "TRANSLATIONS_LIST": "fr"
+            }
+        },
+        {
+            "name": "mini-en-it",
+            "description": "Original Prusa MINI (EN & IT translation)",
+            "cacheVariables": {
+                "PRINTER": "MINI",
+                "BOARD": "BUDDY",
+                "TRANSLATIONS_LIST": "it"
+            }
+        },
+        {
+            "name": "mini-en-pl",
+            "description": "Original Prusa MINI (EN & PL translation)",
+            "cacheVariables": {
+                "PRINTER": "MINI",
+                "BOARD": "BUDDY",
+                "TRANSLATIONS_LIST": "pl"
+            }
+        },
+        {
+            "name": "mini-en-ja",
+            "description": "Original Prusa MINI (EN & JA translation)",
+            "cacheVariables": {
+                "PRINTER": "MINI",
+                "BOARD": "BUDDY",
+                "TRANSLATIONS_LIST": "ja"
+            }
+        },
+        {
+            "name": "mini-en-uk",
+            "description": "Original Prusa MINI (EN & UK translation)",
+            "cacheVariables": {
+                "PRINTER": "MINI",
+                "BOARD": "BUDDY",
+                "TRANSLATIONS_LIST": "uk"
+            }
+        },
+        {
+            "name": "mk4",
+            "description": "Original Prusa MK4 with xBuddy 0.2.7c or newer fw compatible, 400-step motors and planetary gearbox",
+            "cacheVariables": {
+                "PRINTER": "MK4",
+                "BOARD": "XBUDDY"
+            }
+        },
+        {
+            "name": "mk4-burst",
+            "description": "Original Prusa MK4 with xBuddy 0.2.7c or newer fw compatible, 400-step motors and planetary gearbox",
+            "cacheVariables": {
+                "PRINTER": "MK4",
+                "BOARD": "XBUDDY",
+                "ENABLE_BURST":true
+            }
+        },
+        {
+            "name": "mk3.5",
+            "description": "Original Prusa MK3.5 with xBuddy 0.2.7c or newer fw compatible, 200-step motors and MK3 extruder",
+            "cacheVariables": {
+                "PRINTER": "MK3.5",
+                "BOARD": "XBUDDY"
+            }
+        },
+        {
+            "name": "ix",
+            "description": "Original Prusa iX with xBuddy 0.2.7c or newer, with 200-step motors",
+            "cacheVariables": {
+                "PRINTER": "iX",
+                "BOARD": "XBUDDY",
+                "MODULARBED_BINARY_DIR": {
+                    "type": "FILEPATH",
+                    "value": "build-vscode-modularbed"
+                }
+            }
+        },
+        {
+            "name": "xl",
+            "description": "Original Prusa XL",
+            "cacheVariables": {
+                "PRINTER": "XL",
+                "BOARD": "XLBUDDY",
+                "DWARF_BINARY_DIR": {
+                    "type": "FILEPATH",
+                    "value": "build-vscode-dwarf"
+                },
+                "MODULARBED_BINARY_DIR": {
+                    "type": "FILEPATH",
+                    "value": "build-vscode-modularbed"
+                }
+            }
+        },
+        {
+            "name": "xl-burst",
+            "description": "Original Prusa XL with Burst Stepping",
+            "cacheVariables": {
+                "PRINTER": "XL",
+                "BOARD": "XLBUDDY",
+                "DWARF_BINARY_DIR": {
+                    "type": "FILEPATH",
+                    "value": "build-vscode-dwarf"
+                },
+                "MODULARBED_BINARY_DIR": {
+                    "type": "FILEPATH",
+                    "value": "build-vscode-modularbed"
+                },
+                "ENABLE_BURST":true
+            }
+        },
+        {
+            "name": "xl-minimal",
+            "description": "Original Prusa XL with optional features removed",
+            "cacheVariables": {
+                "PRINTER": "XL",
+                "BOARD": "XLBUDDY",
+                "DWARF_BINARY_DIR": {
+                    "type": "FILEPATH",
+                    "value": "build-vscode-dwarf"
+                },
+                "MODULARBED_BINARY_DIR": {
+                    "type": "FILEPATH",
+                    "value": "build-vscode-modularbed"
+                },
+                "CONNECT":false,
+                "MDNS":false,
+                "HAS_BELT_TUNING":false,
+                "HAS_CANCEL_OBJECT":false,
+                "HAS_GEARBOX_ALIGNMENT":false,
+                "HAS_INPUT_SHAPER_CALIBRATION":false,
+                "HAS_PHASE_STEPPING_CALIBRATION":false,
+                "HAS_SELFTEST":false
+            }
+        },
+        {
+            "name": "xl_dev_kit",
+            "description": "Original Prusa xl_dev_kit",
+            "cacheVariables": {
+                "PRINTER": "XL_DEV_KIT",
+                "BOARD": "XL_DEV_KIT_XLB"
+            }
+        },
+        {
+            "name": "xl-dwarf",
+            "description": "Original Prusa XL's Dwarf (the extruder puppy)",
+            "cacheVariables": {
+                "PRINTER": "XL",
+                "BOARD": "DWARF"
+            }
+        },
+        {
+            "name": "xl-modularbed",
+            "description": "Original Prusa XL's Modular Bed",
+            "cacheVariables": {
+                "PRINTER": "XL",
+                "BOARD": "MODULARBED"
+            }
+        },
+        {
+            "name": "ix-modularbed",
+            "description": "Original Prusa iX's Modular Bed",
+            "cacheVariables": {
+                "PRINTER": "iX",
+                "BOARD": "MODULARBED"
+            }
+        },
+        {
+            "name": "coreone-xbuddy-extension",
+            "description": "Original Prusa CORE One Extension Board",
+            "cacheVariables": {
+                "PRINTER": "COREONE",
+                "BOARD": "XBUDDY_EXTENSION"
+            }
+        }
+    ]
+}

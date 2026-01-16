@@ -1,0 +1,34 @@
+#pragma once
+
+#include <inplace_vector.hpp>
+
+#include "filament.hpp"
+
+using FilamentList = stdext::inplace_vector<FilamentType, total_filament_type_count>;
+
+/// List of all filaments, in the order that makes kind of sense to the user
+/// !!! Order of items in the list can change between builds. Do not rely on it.
+extern constinit const FilamentList all_filament_types;
+
+struct GenerateFilamentListConfig {
+    /// If set, only outputs visible filaments
+    bool visible_only = true;
+
+    /// If set, visible items will be at the front
+    bool visible_first = false;
+
+    /// If set, the filaments will be sorted based on config_store().filament_order
+    /// \p visible_first has precedence
+    bool user_ordering = true;
+
+    /// If set, the set filament type will be at the first position of the list, circumventing all filters and sorting rules
+    FilamentType enforce_first_item = FilamentType::none;
+};
+
+/// Generate filament list config for management purposes - show all, respect user ordering
+extern const GenerateFilamentListConfig management_generate_filament_list_config;
+
+/// Generates a filament list based on the provided \p config.
+/// The result is stored in \p list. (But some slots might be unused).
+/// \returns generated list size
+void generate_filament_list(FilamentList &list, const GenerateFilamentListConfig &config);

@@ -16,7 +16,7 @@ class Translations {
         const ITranslationProvider *provider;
         uint16_t langCode;
     };
-    static const size_t maxTranslations = 7;
+    static const size_t maxTranslations = 9;
     std::array<TranRec, maxTranslations> translations; // record of translations
     Translations();
     const ITranslationProvider *currentProvider;
@@ -44,6 +44,9 @@ public:
         // does not cause signed bit extension
         return uint16_t(lcu[1] << 8) + lcu[0];
     }
+
+    using GetTextHook = void (*)(const char *);
+    GetTextHook gettext_hook = nullptr;
 };
 
 struct ProviderRegistrator {

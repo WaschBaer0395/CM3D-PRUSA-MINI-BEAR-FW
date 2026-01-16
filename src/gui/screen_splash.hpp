@@ -1,25 +1,24 @@
 #pragma once
 #include "gui.hpp"
 #include "screen.hpp"
+#include <guiconfig/guiconfig.h>
 
-struct screen_splash_data_t : public AddSuperWindow<screen_t> {
-    window_icon_t logo_prusa_mini;
+class screen_splash_data_t : public screen_t {
     window_text_t text_progress;
-    window_progress_t progress;
-    window_text_t text_version;
-    char text_version_buffer[16];
-    window_icon_t icon_logo_buddy;
-    window_icon_t icon_logo_marlin;
+    window_numberless_progress_t progress;
 
-    window_icon_t icon_debug;
+    bool version_displayed;
+    char text_progress_buffer[32];
 
-    // uint32_t last_timer;
-
+public:
     screen_splash_data_t();
+    ~screen_splash_data_t();
+
+    static void bootstrap_cb(unsigned percent, std::optional<const char *> str);
 
 private:
     virtual void draw() override;
 
 protected:
-    virtual void windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) override;
+    virtual void windowEvent(window_t *sender, GUI_event_t event, void *param) override;
 };

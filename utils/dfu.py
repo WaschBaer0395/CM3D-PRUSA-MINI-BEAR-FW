@@ -8,12 +8,14 @@ from pathlib import Path
 
 
 class DfuImage:
+
     def __init__(self, address, data):
         self.address = address
         self.data = data
 
 
 class DfuTarget:
+
     def __init__(self, images: List[DfuImage], name='Generic Target'):
         self.images = images
         self.name = name
@@ -79,7 +81,15 @@ def create_cmd(args):
         with open(infile[1], 'rb') as f:
             data = f.read()
             if infile[1].suffix == '.bbf':
-                data = data[64:]  # skip signature in .bbf files
+                # skip signature in .bbf files
+                data = data[64:]
+                # next is the header (which we want to keep & flash)
+                # it contains 32B with the firmware hash
+                # followed by 4B with firmware size
+                firmware_size = int.from_bytes(data[32:32 + 4], 'little')
+                # strip resources and other metadata following the firmware itself
+                # firmware starts after the first 512B (the header)
+                data = data[:512 + firmware_size]
             images.append(DfuImage(infile[0], data))
     # create dfu files
     dfu_file_create(path=args.dfu_file,

@@ -3,49 +3,155 @@
 #include "gui.hpp"
 #include "ScreenHandler.hpp"
 
-void window_text_t::SetText(string_view_utf8 txt) {
+void window_text_t::SetText(const string_view_utf8 &txt) {
+    if (text.is_same_ref(txt)) {
+        return; // prevent invalidation if texts are the same
+    }
+
     text = txt;
     Invalidate();
 }
 
-void window_text_t::SetTextColor(color_t clr) {
-    color_text = clr;
-    Invalidate();
+window_text_t::window_text_t(window_t *parent, Rect16 rect, is_multiline multiline, is_closed_on_click_t close, const string_view_utf8 &txt)
+    : IWindowText(parent, rect, close)
+    , text(txt) {
+    flags.multiline = bool(multiline);
 }
 
-void window_text_t::SetPadding(padding_ui8_t padd) {
-    padding = padd;
-    Invalidate();
-}
+namespace {
 
-window_text_t::window_text_t(window_t *parent, Rect16 rect, is_multiline multiline, is_closed_on_click_t close, string_view_utf8 txt)
-    : AddSuperWindow<window_aligned_t>(parent, rect, win_type_t::normal, close)
-    , color_text(GuiDefaults::ColorText)
-    , font(GuiDefaults::Font)
-    , text(txt)
-    , padding(GuiDefaults::Padding) {
-    flags.custom0 = bool(multiline);
+void do_draw(Rect16 rect, const string_view_utf8 &text, Font font, Color parent_background, Color clr_text_background, Color clr_text_foreground, padding_ui8_t padding, text_flags text_flags, uint8_t rounding_rad, uint8_t rounding_flag, bool has_round_corners) {
+    if (has_round_corners) {
+        render_rounded_rect(rect, parent_background, clr_text_background, rounding_rad, rounding_flag);
+
+        rect = Rect16::Width_t { static_cast<uint16_t>(rect.Width() - rounding_rad * 2) };
+        rect = Rect16::X_t { static_cast<int16_t>(rect.Left() + rounding_rad) };
+    }
+
+    render_text_align(rect, text, font,
+        clr_text_background,
+        clr_text_foreground,
+        padding, text_flags);
 }
+} // namespace
 
 void window_text_t::unconditionalDraw() {
-    render_text_align(rect, text, font,
-        (IsFocused()) ? color_text : color_back,
-        (IsFocused()) ? color_back : color_text,
-        padding, flags.custom0 ? GetAlignment() | RENDER_FLG_WORDB : GetAlignment());
+    const bool invert_text_back_colors = IsFocused() && !flags.color_scheme_background && !flags.color_scheme_foreground;
+
+    do_draw(GetRect(), text, get_font(),
+        GetParent() ? GetParent()->GetBackColor() : GetBackColor(),
+        invert_text_back_colors ? GetTextColor() : GetBackColor(),
+        invert_text_back_colors ? GetBackColor() : GetTextColor(),
+        padding, { GetAlignment(), is_multiline(flags.multiline), check_overflow(flags.check_overflow) },
+        GuiDefaults::MenuItemCornerRadius, MIC_ALL_CORNERS, flags.has_round_corners);
 }
 
 /*****************************************************************************/
-//window_text_button_t
-window_text_button_t::window_text_button_t(window_t *parent, Rect16 rect, ButtonCallback cb, string_view_utf8 txt)
-    : AddSuperWindow<window_text_t>(parent, rect, is_multiline::no, is_closed_on_click_t::no, txt)
+// window_text_button_t
+WindowButton::WindowButton(window_t *parent, Rect16 rect, ButtonCallback cb, const string_view_utf8 &txt)
+    : window_text_t(parent, rect, is_multiline::no, is_closed_on_click_t::no, txt)
     , callback(cb) {
     Enable();
 }
 
-void window_text_button_t::windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) {
-    if (event == GUI_event_t::CLICK) {
-        callback();
-    } else {
-        SuperWindowEvent(sender, event, param);
+void WindowButton::set_icon(const img::Resource *set) {
+    if (icon_ == set) {
+        return;
     }
+
+    icon_ = set;
+    if (set) {
+        text = {};
+    }
+    Invalidate();
+}
+
+void WindowButton::SetText(const string_view_utf8 &txt) {
+    set_icon(nullptr);
+    window_text_t::SetText(txt);
+}
+
+bool window_text_t::check_text_overflow() const {
+    const auto font = resource_font(get_font());
+    StringReaderUtf8 reader(GetText());
+    return RectTextLayout(reader, GetRect().Width() / font->w, GetRect().Height() / font->h, flags.multiline ? is_multiline::yes : is_multiline::no).has_text_overflown();
+}
+
+void window_text_t::auto_select_font(Font largest, Font smallest) {
+    static constexpr std::array font_list {
+#if HAS_LARGE_DISPLAY()
+        Font::large,
+#endif
+            Font::big,
+            Font::normal,
+            Font::small
+    };
+
+    const Font *fnt = font_list.begin();
+    while (*fnt != largest) {
+        fnt++;
+    }
+    do {
+        set_font(*fnt);
+    } while (!check_text_overflow() && *fnt++ != smallest);
+}
+
+void WindowButton::unconditionalDraw() {
+    if (icon_) {
+        window_aligned_t::unconditionalDraw(); // background
+        window_icon_t::unconditional_draw(this, icon_);
+
+    } else {
+        window_text_t::unconditionalDraw();
+    }
+}
+
+void WindowButton::windowEvent(window_t *sender, GUI_event_t event, void *param) {
+    switch (event) {
+
+    case GUI_event_t::CLICK:
+    case GUI_event_t::TOUCH_CLICK:
+        callback(*this);
+        break;
+
+    default:
+        window_text_t::windowEvent(sender, event, param);
+        break;
+    }
+}
+
+WindowBlinkingText::WindowBlinkingText(window_t *parent, Rect16 rect, const string_view_utf8 &txt, uint16_t blink_step)
+    : window_text_t(parent, rect, is_multiline::no, is_closed_on_click_t::no, txt)
+    , blink_step(blink_step)
+    , blink_enable(false) {
+    SetPadding({ 0, 0, 0, 0 });
+}
+
+void WindowBlinkingText::unconditionalDraw() {
+    // blink_enable handled in event (better invalidation)
+    Color backup_clr = GetTextColor();
+    if (blink_phase) {
+        SetTextColor(color_blink);
+    }
+
+    window_text_t::unconditionalDraw();
+
+    if (blink_phase) {
+        SetTextColor(backup_clr);
+    }
+}
+
+void WindowBlinkingText::windowEvent(window_t *sender, GUI_event_t event, void *param) {
+    const uint8_t prev_blink_phase = blink_phase;
+    if (blink_enable && blink_step) {
+        blink_phase = (gui::GetTick() / uint32_t(blink_step)) & 0b1;
+    } else {
+        blink_phase = 0;
+    }
+
+    if (blink_phase != prev_blink_phase) {
+        Invalidate();
+    }
+
+    window_text_t::windowEvent(sender, event, param);
 }

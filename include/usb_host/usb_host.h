@@ -1,90 +1,47 @@
-/**
-  ******************************************************************************
-  * @file           : usb_host.h
-  * @version        : v1.0_Cube
-  * @brief          : Header for usb_host.c file.
-  ******************************************************************************
-  * @attention
-  *
-  * <h2><center>&copy; Copyright (c) 2020 STMicroelectronics.
-  * All rights reserved.</center></h2>
-  *
-  * This software component is licensed by ST under Ultimate Liberty license
-  * SLA0044, the "License"; You may not use this file except in compliance with
-  * the License. You may obtain a copy of the License at:
-  *                             www.st.com/SLA0044
-  *
-  ******************************************************************************
-  */
-
-/* Define to prevent recursive inclusion -------------------------------------*/
 #ifndef __USB_HOST__H__
-    #define __USB_HOST__H__
+#define __USB_HOST__H__
 
-    #ifdef __cplusplus
+#ifdef __cplusplus
+
+namespace usb_host {
+
+/// \returns whether there is a USB drive inserted in the USB slot
+bool is_media_inserted();
+
+/// \returns whether there is a USB drive connected since startup
+bool is_media_inserted_since_startup();
+
+// In case media is invalid, this will disable it until reconnection
+void disable_media();
+} // namespace usb_host
+
+namespace usbh_power_cycle {
+
+void init();
+
+// callback from USBH_MSC_Worker when an io error occurs
+void io_error();
+
+// callback from isr, it is called when the USB is disconnected or when USB flash is deadlocked
+void port_disabled();
+
+// indication that the one click dialog during USB recovery reset should be blocked
+bool block_one_click_print();
+
+} // namespace usbh_power_cycle
+
 extern "C" {
-    #endif
+#endif
 
-    /* Includes ------------------------------------------------------------------*/
-    #include "stm32f4xx.h"
-    #include "stm32f4xx_hal.h"
+#include "usbh_def.h"
 
-/* USER CODE BEGIN INCLUDE */
-
-/* USER CODE END INCLUDE */
-
-/** @addtogroup USBH_OTG_DRIVER
-  * @{
-  */
-
-/** @defgroup USBH_HOST USBH_HOST
-  * @brief Host file for Usb otg low level driver.
-  * @{
-  */
-
-/** @defgroup USBH_HOST_Exported_Variables USBH_HOST_Exported_Variables
-  * @brief Public variables.
-  * @{
-  */
-
-/**
-  * @}
-  */
-
-/** Status of the application. */
-typedef enum {
-    APPLICATION_IDLE = 0,
-    APPLICATION_START,
-    APPLICATION_READY,
-    APPLICATION_DISCONNECT
-} ApplicationTypeDef;
-
-/** @defgroup USBH_HOST_Exported_FunctionsPrototype USBH_HOST_Exported_FunctionsPrototype
-  * @brief Declaration of public functions for Usb host.
-  * @{
-  */
-
-/* Exported functions -------------------------------------------------------*/
-
-/** @brief USB Host initialization function. */
 void MX_USB_HOST_Init(void);
 
-/**
-  * @}
-  */
+void USBH_UserProcess(USBH_HandleTypeDef *, uint8_t id);
+extern TimerHandle_t USBH_restart_timer;
 
-/**
-  * @}
-  */
-
-/**
-  * @}
-  */
-
-    #ifdef __cplusplus
+#ifdef __cplusplus
 }
-    #endif
+#endif
 
 #endif /* __USB_HOST__H__ */
-
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

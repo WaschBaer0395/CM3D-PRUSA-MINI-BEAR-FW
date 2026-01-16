@@ -27,10 +27,6 @@
 
 #include "../../inc/MarlinConfig.h"
 
-#if HAS_LCD_MENU
-  #include "../../lcd/ultralcd.h"
-#endif
-
 #if HAS_SUICIDE
   #include "../../Marlin.h"
 #endif
@@ -48,9 +44,22 @@
     #include "../../feature/tmc_util.h"
   #endif
 
+  /** \addtogroup G-Codes
+   * @{
+   */
+
   /**
-   * M80   : Turn on the Power Supply
-   * M80 S : Report the current state and exit
+   *### M80: Turn on the Power Supply <a href="https://reprap.org/wiki/G-code#M80:_ATX_Power_On">M80: ATX Power On</a>
+   *
+   * Only MK3.5/S, MK3.9/S, MK4/S and iX
+   *
+   *#### Usage
+   *
+   *    M80 [ S ]
+   *
+   *#### Parameters
+   *
+   * - `S` - Report the current state and exit
    */
   void GcodeSuite::M80() {
 
@@ -75,18 +84,19 @@
       delay(100); // Wait for power to settle
       restore_stepper_drivers();
     #endif
-
-    #if HAS_LCD_MENU
-      ui.reset_status();
-    #endif
   }
 
 #endif // HAS_POWER_SWITCH
 
 /**
- * M81: Turn off Power, including Power Supply, if there is one.
+ *### M81: Turn off Power <a href="https://reprap.org/wiki/G-code#M81:_ATX_Power_Off">M81: ATX Power Off</a>
  *
- *      This code should ALWAYS be available for FULL SHUTDOWN!
+ * This code should ALWAYS be available for FULL SHUTDOWN!
+ *
+ *#### Usage
+ *
+ *    M81
+ *
  */
 void GcodeSuite::M81() {
   thermalManager.disable_all_heaters();
@@ -108,8 +118,6 @@ void GcodeSuite::M81() {
   #elif HAS_POWER_SWITCH
     PSU_OFF();
   #endif
-
-  #if HAS_LCD_MENU
-    LCD_MESSAGEPGM_P(PSTR(MACHINE_NAME " " MSG_OFF "."));
-  #endif
 }
+
+/** @}*/

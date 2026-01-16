@@ -26,12 +26,24 @@
 
 #if DISABLED(NO_VOLUMETRICS)
 
-  /**
-   * M200: Set filament diameter and set E axis units to cubic units
-   *
-   *    T<extruder> - Optional extruder number. Current extruder if omitted.
-   *    D<linear> - Diameter of the filament. Use "D0" to switch back to linear units on the E axis.
+  /** \addtogroup G-Codes
+   * @{
    */
+
+  /**
+  *### M200: Set filament diameter <a href="https://reprap.org/wiki/G-code#M200:_Set_filament_diameter">M200: Set filament diameter</a>
+  *
+  * and set E axis units to cubic units
+  *
+  *#### Usage
+  *
+  *    M200 [ T | D ]
+  *
+  *#### Parameters
+  *
+  * - `T` - Optional extruder number. Current extruder if omitted.
+  * - `D` - Diameter of the filament. Use "D0" to switch back to linear units on the E axis.
+  */
   void GcodeSuite::M200() {
 
     const int8_t target_extruder = get_target_extruder_from_command();
@@ -47,12 +59,30 @@
     planner.calculate_volumetric_multipliers();
   }
 
+  /** @}*/
+
 #endif // !NO_VOLUMETRICS
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M201: Set max acceleration in units/s^2 for print moves (M201 X1000 Y1000)
+ *### M201: Set max acceleration <a href="https://reprap.org/wiki/G-code#M201:_Set_max_acceleration">M201: Set max acceleration</a>
  *
- *       With multiple extruders use T to specify which one.
+ * in units/s^2 for print moves
+ *
+ *#### Usage
+ *
+ *    M201 [ X | Y | Z | E | T ]
+ *
+ *#### Parameters
+ *
+ * - `X` - X axis max acceleration
+ * - `Y` - Y axis max acceleration
+ * - `Z` - Z axis max acceleration
+ * - `E` - E axis max acceleration
+ * - `T` - Tool. With multiple extruders use T to specify which one.
  */
 void GcodeSuite::M201() {
 
@@ -68,9 +98,21 @@ void GcodeSuite::M201() {
 }
 
 /**
- * M203: Set maximum feedrate that your machine can sustain (M203 X200 Y200 Z300 E10000) in units/sec
+ *### M203: Set maximum feedrate <a href="https://reprap.org/wiki/G-code#M203:_Set_maximum_feedrate">M203: Set maximum feedrate</a>
  *
- *       With multiple extruders use T to specify which one.
+ * that your machine can sustain in units/sec
+ *
+ *#### Usage
+ *
+ *    M203 [ X | Y | Z | E | T ]
+ *
+ *#### Parameters
+ *
+ * - `X` - X axis max acceleration
+ * - `Y` - Y axis max acceleration
+ * - `Z` - Z axis max acceleration
+ * - `E` - E axis max acceleration
+ * - `T` - Tool. With multiple extruders use T to specify which one.
  */
 void GcodeSuite::M203() {
 
@@ -85,11 +127,22 @@ void GcodeSuite::M203() {
 }
 
 /**
- * M204: Set Accelerations in units/sec^2 (M204 P1200 R3000 T3000)
+ *### M204: Get/Set Accelerations <a href="https://reprap.org/wiki/G-code#M204:_Set_default_acceleration">M204: Set default acceleration</a>
  *
- *    P = Printing moves
- *    R = Retract only (no X, Y, Z) moves
- *    T = Travel (non printing) moves
+ * in units/sec^2
+ *
+ *#### Usage
+ *
+ *    M204 [ S | P | R | T ]
+ *
+ *#### Parameters
+ *
+ * - `S` - Set acceleration
+ * - `P` - Printing moves
+ * - `R` - Retract only (no X, Y, Z) moves
+ * - `T` - Travel (non printing) moves
+ *
+ * Without parameters prints the current Accelerations
  */
 void GcodeSuite::M204() {
   if (!parser.seen("PRST")) {
@@ -98,17 +151,26 @@ void GcodeSuite::M204() {
     SERIAL_ECHOLNPAIR(" T", planner.settings.travel_acceleration);
   }
   else {
+    auto s = planner.user_settings;
     //planner.synchronize();
     // 'S' for legacy compatibility. Should NOT BE USED for new development
-    if (parser.seenval('S')) planner.settings.travel_acceleration = planner.settings.acceleration = parser.value_linear_units();
-    if (parser.seenval('P')) planner.settings.acceleration = parser.value_linear_units();
-    if (parser.seenval('R')) planner.settings.retract_acceleration = parser.value_linear_units();
-    if (parser.seenval('T')) planner.settings.travel_acceleration = parser.value_linear_units();
+    if (parser.seenval('S')) s.travel_acceleration = s.acceleration = parser.value_linear_units();
+    if (parser.seenval('P')) s.acceleration = parser.value_linear_units();
+    if (parser.seenval('R')) s.retract_acceleration = parser.value_linear_units();
+    if (parser.seenval('T')) s.travel_acceleration = parser.value_linear_units();
+
+    planner.apply_settings(s);
   }
 }
 
 /**
- * M205: Set Advanced Settings
+ *### M205: Set Advanced Settings <a href="https://reprap.org/wiki/G-code#M205:_Advanced_settings">M205: Advanced settings</a>
+ *
+ *#### Usage
+ *
+ *    M205 [ B | S | T | X | Y | Z | E | J ]
+ *
+ *#### Parameters
  *
  *    B = Min Segment Time (µs)
  *    S = Min Feed Rate (units/s)
@@ -133,17 +195,20 @@ void GcodeSuite::M205() {
   if (!parser.seen("BST" J_PARAM XYZE_PARAM)) return;
 
   //planner.synchronize();
-  if (parser.seen('B')) planner.settings.min_segment_time_us = parser.value_ulong();
-  if (parser.seen('S')) planner.settings.min_feedrate_mm_s = parser.value_linear_units();
-  if (parser.seen('T')) planner.settings.min_travel_feedrate_mm_s = parser.value_linear_units();
+  {
+    auto s = planner.user_settings;
+
+    if (parser.seen('B')) s.min_segment_time_us = parser.value_ulong();
+    if (parser.seen('S')) s.min_feedrate_mm_s = parser.value_linear_units();
+    if (parser.seen('T')) s.min_travel_feedrate_mm_s = parser.value_linear_units();
+
+    planner.apply_settings(s);
+  }
   #if DISABLED(CLASSIC_JERK)
     if (parser.seen('J')) {
       const float junc_dev = parser.value_linear_units();
       if (WITHIN(junc_dev, 0.01f, 0.3f)) {
         planner.junction_deviation_mm = junc_dev;
-        #if ENABLED(LIN_ADVANCE)
-          planner.recalculate_max_e_jerk();
-        #endif
       }
       else
         SERIAL_ERROR_MSG("?J out of range (0.01 to 0.3)");
@@ -155,7 +220,7 @@ void GcodeSuite::M205() {
     if (parser.seen('Z')) {
       planner.set_max_jerk(Z_AXIS, parser.value_linear_units());
       #if HAS_MESH && DISABLED(LIMITED_JERK_EDITING)
-        if (planner.max_jerk.z <= 0.1f)
+        if (planner.settings.max_jerk.z <= 0.1f)
           SERIAL_ECHOLNPGM("WARNING! Low Z Jerk may lead to unwanted pauses.");
       #endif
     }
@@ -164,3 +229,5 @@ void GcodeSuite::M205() {
     #endif
   #endif
 }
+
+/** @}*/

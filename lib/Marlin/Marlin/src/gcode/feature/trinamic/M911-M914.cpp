@@ -30,6 +30,12 @@
 #include "../../../module/planner.h"
 #include "../../queue.h"
 
+#include "config_store/store_instance.hpp"
+
+#if ENABLED(CRASH_RECOVERY)
+  #include "../../feature/prusa/crash_recovery.hpp"
+#endif
+
 #if ENABLED(MONITOR_DRIVER_STATUS)
 
   #define M91x_USE(ST) (AXIS_DRIVER_TYPE(ST, TMC2130) || AXIS_DRIVER_TYPE(ST, TMC2160) || AXIS_DRIVER_TYPE(ST, TMC2208) || AXIS_DRIVER_TYPE(ST, TMC2209) || AXIS_DRIVER_TYPE(ST, TMC2660) || AXIS_DRIVER_TYPE(ST, TMC5130) || AXIS_DRIVER_TYPE(ST, TMC5160))
@@ -44,10 +50,20 @@
     #error "MONITOR_DRIVER_STATUS requires at least one TMC2130, 2160, 2208, 2209, 2660, 5130, or 5160."
   #endif
 
-  /**
-   * M911: Report TMC stepper driver overtemperature pre-warn flag
-   *       This flag is held by the library, persisting until cleared by M912
+  /** \addtogroup G-Codes
+   * @{
    */
+
+  /**
+   *### M911: Report TMC stepper driver overtemperature pre-warn flag <a href=" "> </a>
+  *
+  * Only MK3.5/S, MK3.9/S and MK4/S
+  *
+  *#### Usage
+  *
+  *    M911
+  *
+  */
   void GcodeSuite::M911() {
     #if M91x_USE(X)
       tmc_report_otpw(stepperX);
@@ -91,17 +107,31 @@
   }
 
   /**
-   * M912: Clear TMC stepper driver overtemperature pre-warn flag held by the library
-   *       Specify one or more axes with X, Y, Z, X1, Y1, Z1, X2, Y2, Z2, Z3 and E[index].
-   *       If no axes are given, clear all.
-   *
-   * Examples:
-   *       M912 X   ; clear X and X2
-   *       M912 X1  ; clear X1 only
-   *       M912 X2  ; clear X2 only
-   *       M912 X E ; clear X, X2, and all E
-   *       M912 E1  ; clear E1 only
-   */
+   *### M912: Clear TMC stepper driver overtemperature pre-warn flag held by the library <a href=" "> </a>
+  *
+  * Only MK3.5/S, MK3.9/S and MK4/S
+  *
+  *#### Usage
+  *
+  *    M912 [ X | Y | Z | E |  ]
+  *
+  *#### Parameters
+  *
+  * - `X` - X driver
+  * - `Y` - Y driver
+  * - `Z` - Z driver
+  * - `E` - all E drivers
+  *   -`E<number>` - Only E<number>
+  *
+  * Without parameters clear all
+  *
+  * #### Examples:
+  *       M912 X   ; clear X and X2
+  *       M912 X1  ; clear X1 only
+  *       M912 X2  ; clear X2 only
+  *       M912 X E ; clear X, X2, and all E
+  *       M912 E1  ; clear E1 only
+  */
   void GcodeSuite::M912() {
     #if M91x_SOME_X
       const bool hasX = parser.seen(axis_codes.x);
@@ -188,7 +218,26 @@
 #endif // MONITOR_DRIVER_STATUS
 
 /**
- * M913: Set HYBRID_THRESHOLD speed.
+ *### M913: Get/Set Set Hybrid Threshold Speed <a href=" "> </a>
+ *
+ * Only MK3.5/S, MK3.9/S and MK4/S
+ *
+ *#### Usage
+ *
+ *    M913 [ X | Y | Z | E | I ]
+ *
+ *#### Parameters
+ *
+ * - `X` - Set Hybrid Threshold for X to the given value
+ * - `Y` - Set Hybrid Threshold for Y to the given value
+ * - `Z` - Set Hybrid Threshold for Z to the given value
+ * - `E` - Set Hybrid Threshold for E to the given value
+ * - `I` - Index for multiple steppers
+ *   - `1` - for X2, Y2, Z2
+ *   - `2` - for Z3
+ *   - `3` - for Z4
+ *
+ * With no parameters report stealthCop max speeds
  */
 #if ENABLED(HYBRID_THRESHOLD)
   void GcodeSuite::M913() {
@@ -305,7 +354,23 @@
 #endif // HYBRID_THRESHOLD
 
 /**
- * M914: Set StallGuard sensitivity.
+ *### M914: Get/Set StallGuard sensitivity <a href=" "> </a>
+ *
+ *#### Usage
+ *
+ *    M914 [ X | Y | Z | I ]
+ *
+ *#### Parameters
+ *
+ * - `X` - Sensitivity of the X stepper driver
+ * - `Y` - Sensitivity of the Y stepper driver
+ * - `Z` - Sensitivity of the Z stepper driver
+ * - `I` - Index for multiple steppers
+ *   - `1` - for X2, Y2, Z2
+ *   - `2` - for Z3
+ *   - `3` - for Z4
+ *
+ * With no parameters report StallGuard homing sensitivities
  */
 #if USE_SENSORLESS
   void GcodeSuite::M914() {
@@ -313,39 +378,76 @@
     bool report = true;
     const uint8_t index = parser.byteval('I');
     LOOP_XYZ(i) if (parser.seen(axis_codes[i])) {
-      const int16_t value = parser.value_int();
+      int16_t value = parser.value_int();
       report = false;
       switch (i) {
         #if X_SENSORLESS
           case X_AXIS:
+            if (!parser.has_value()) {
+              value = X_STALL_SENSITIVITY;
+            }
             #if AXIS_HAS_STALLGUARD(X)
-              if (index < 2) stepperX.homing_threshold(value);
+              #if ENABLED(CRASH_RECOVERY)
+                if (index < 2) crash_s.home_sensitivity[0] = value;
+              #else
+                if (index < 2) stepperX.stall_sensitivity(value);
+              #endif
             #endif
             #if AXIS_HAS_STALLGUARD(X2)
-              if (!(index & 1)) stepperX2.homing_threshold(value);
+              #if ENABLED(CRASH_RECOVERY)
+                #error "Not implemented."
+              #else
+                if (!(index & 1)) stepperX2.stall_sensitivity(value);
+              #endif
             #endif
             break;
         #endif
         #if Y_SENSORLESS
           case Y_AXIS:
+            if (!parser.has_value()) {
+              value = Y_STALL_SENSITIVITY;
+            }
             #if AXIS_HAS_STALLGUARD(Y)
-              if (index < 2) stepperY.homing_threshold(value);
+              #if ENABLED(CRASH_RECOVERY)
+                if (index < 2) crash_s.home_sensitivity[1] = value;
+              #else
+                if (index < 2) stepperY.stall_sensitivity(value);
+              #endif
             #endif
             #if AXIS_HAS_STALLGUARD(Y2)
-              if (!(index & 1)) stepperY2.homing_threshold(value);
+              #if ENABLED(CRASH_RECOVERY)
+                #error "Not implemented."
+              #else
+                if (!(index & 1)) stepperY2.stall_sensitivity(value);
+              #endif
             #endif
             break;
         #endif
         #if Z_SENSORLESS
           case Z_AXIS:
+            if (!parser.has_value()) {
+              value = Z_STALL_SENSITIVITY;
+            }
             #if AXIS_HAS_STALLGUARD(Z)
-              if (index < 2) stepperZ.homing_threshold(value);
+              #if ENABLED(CRASH_RECOVERY)
+                if (index < 2) crash_s.home_sensitivity[2] = value;
+              #else
+                if (index < 2) stepperZ.stall_sensitivity(value);
+              #endif
             #endif
             #if AXIS_HAS_STALLGUARD(Z2)
-              if (index == 0 || index == 2) stepperZ2.homing_threshold(value);
+              #if ENABLED(CRASH_RECOVERY)
+                #error "Not implemented."
+              #else
+                if (index == 0 || index == 2) stepperZ2.stall_sensitivity(value);
+              #endif
             #endif
             #if AXIS_HAS_STALLGUARD(Z3)
-              if (index == 0 || index == 3) stepperZ3.homing_threshold(value);
+              #if ENABLED(CRASH_RECOVERY)
+                #error "Not implemented."
+              #else
+                if (index == 0 || index == 3) stepperZ3.stall_sensitivity(value);
+              #endif
             #endif
             break;
         #endif
@@ -353,35 +455,46 @@
     }
 
     if (report) {
-      #if X_SENSORLESS
-        #if AXIS_HAS_STALLGUARD(X)
-          tmc_print_sgt(stepperX);
+      #if ENABLED(CRASH_RECOVERY)
+        SERIAL_ECHOPGM("X homing sensitivity: ");
+        SERIAL_PRINTLN(crash_s.home_sensitivity[0], DEC);
+        SERIAL_ECHOPGM("Y homing sensitivity: ");
+        SERIAL_PRINTLN(crash_s.home_sensitivity[1], DEC);
+        SERIAL_ECHOPGM("Z homing sensitivity: ");
+        SERIAL_PRINTLN(crash_s.home_sensitivity[2], DEC);
+      #else
+        #if X_SENSORLESS
+          #if AXIS_HAS_STALLGUARD(X)
+            tmc_print_sgt(stepperX);
+          #endif
+          #if AXIS_HAS_STALLGUARD(X2)
+            tmc_print_sgt(stepperX2);
+          #endif
         #endif
-        #if AXIS_HAS_STALLGUARD(X2)
-          tmc_print_sgt(stepperX2);
+        #if Y_SENSORLESS
+          #if AXIS_HAS_STALLGUARD(Y)
+            tmc_print_sgt(stepperY);
+          #endif
+          #if AXIS_HAS_STALLGUARD(Y2)
+            tmc_print_sgt(stepperY2);
+          #endif
         #endif
-      #endif
-      #if Y_SENSORLESS
-        #if AXIS_HAS_STALLGUARD(Y)
-          tmc_print_sgt(stepperY);
-        #endif
-        #if AXIS_HAS_STALLGUARD(Y2)
-          tmc_print_sgt(stepperY2);
-        #endif
-      #endif
-      #if Z_SENSORLESS
-        #if AXIS_HAS_STALLGUARD(Z)
-          tmc_print_sgt(stepperZ);
-        #endif
-        #if AXIS_HAS_STALLGUARD(Z2)
-          tmc_print_sgt(stepperZ2);
-        #endif
-        #if AXIS_HAS_STALLGUARD(Z3)
-          tmc_print_sgt(stepperZ3);
+        #if Z_SENSORLESS
+          #if AXIS_HAS_STALLGUARD(Z)
+            tmc_print_sgt(stepperZ);
+          #endif
+          #if AXIS_HAS_STALLGUARD(Z2)
+            tmc_print_sgt(stepperZ2);
+          #endif
+          #if AXIS_HAS_STALLGUARD(Z3)
+            tmc_print_sgt(stepperZ3);
+          #endif
         #endif
       #endif
     }
   }
 #endif // USE_SENSORLESS
+
+/** @}*/
 
 #endif // HAS_TRINAMIC

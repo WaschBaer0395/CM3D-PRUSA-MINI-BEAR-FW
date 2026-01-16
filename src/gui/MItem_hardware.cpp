@@ -1,0 +1,178 @@
+#include "MItem_hardware.hpp"
+#include "ScreenHandler.hpp"
+#include "WindowMenuSpin.hpp"
+#include <option/has_toolchanger.h>
+#include <option/has_side_fsensor.h>
+#include <common/nozzle_diameter.hpp>
+#include <screen_menu_hardware_checks.hpp>
+#include <common/printer_model_data.hpp>
+
+#if HAS_CHAMBER_VENTS()
+    #include <feature/chamber/chamber_enums.hpp>
+#endif
+
+#if HAS_TOOLCHANGER()
+    #include <module/prusa/toolchanger.h>
+    #if HAS_SIDE_FSENSOR()
+        #include <filament_sensors_handler_XL_remap.hpp>
+    #endif /*HAS_SIDE_FSENSOR()*/
+#endif /*HAS_TOOLCHANGER()*/
+
+static constexpr const char *hw_check_items[] = {
+    N_("None"),
+    N_("Warn"),
+    N_("Strict"),
+};
+
+MI_HARDWARE_CHECK::MI_HARDWARE_CHECK(HWCheckType check_type)
+    : MenuItemSwitch(_(hw_check_type_names[check_type]), hw_check_items, static_cast<int>(config_store().visit_hw_check(check_type, [](auto &item) { return item.get(); })))
+    , check_type(check_type) //
+{}
+
+void MI_HARDWARE_CHECK::OnChange([[maybe_unused]] size_t old_index) {
+    config_store().visit_hw_check(check_type, [set = static_cast<HWCheckSeverity>(this->get_index())](auto &item) { item.set(set); });
+}
+
+MI_HARDWARE_G_CODE_CHECKS::MI_HARDWARE_G_CODE_CHECKS()
+    : IWindowMenuItem(_(label), nullptr, is_enabled_t::yes, is_hidden_t::no, expands_t::yes) {
+}
+
+void MI_HARDWARE_G_CODE_CHECKS::click(IWindowMenu &) {
+    Screens::Access()->Open(ScreenFactory::Screen<ScreenMenuHardwareChecks>);
+}
+
+#if HAS_TOOLCHANGER() && HAS_SIDE_FSENSOR()
+// MI_SIDE_FSENSOR_REMAP
+MI_SIDE_FSENSOR_REMAP::MI_SIDE_FSENSOR_REMAP()
+    : WI_ICON_SWITCH_OFF_ON_t(side_fsensor_remap::is_remapped(), _(label), nullptr, is_enabled_t::yes, is_hidden_t::no) {};
+
+void MI_SIDE_FSENSOR_REMAP::OnChange([[maybe_unused]] size_t old_index) {
+    if (uint8_t mask = side_fsensor_remap::ask_to_remap(); mask != 0) { // Ask user to remap
+        Screens::Access()->Get()->Validate(); // Do not redraw this menu yet
+
+        // Change index by what user selected)
+        set_value(side_fsensor_remap::is_remapped());
+
+    #if HAS_SELFTEST()
+        Validate(); // Do not redraw this switch yet
+        marlin_client::test_start_with_data(stmFSensor, static_cast<ToolMask>(mask)); // Start filament sensor calibration for moved tools
+    #endif
+
+    } else {
+        // Change index by what user selected)
+        set_value(side_fsensor_remap::is_remapped());
+    }
+}
+#endif /*HAS_TOOLCHANGER() && HAS_SIDE_FSENSOR()*/
+
+#if HAS_EXTENDED_PRINTER_TYPE()
+MI_EXTENDED_PRINTER_TYPE::MI_EXTENDED_PRINTER_TYPE()
+    : MenuItemSelectMenu(_("Printer Type")) //
+{
+    set_current_item(config_store().extended_printer_type.get());
+}
+
+int MI_EXTENDED_PRINTER_TYPE::item_count() const {
+    return static_cast<int>(extended_printer_type_model.size());
+}
+
+void MI_EXTENDED_PRINTER_TYPE::build_item_text(int index, const std::span<char> &buffer) const {
+    strlcpy(buffer.data(), PrinterModelInfo::get(extended_printer_type_model[index]).id_str, buffer.size());
+}
+
+bool MI_EXTENDED_PRINTER_TYPE::on_item_selected([[maybe_unused]] int old_index, int new_index) {
+    config_store().extended_printer_type.set(new_index);
+
+    #if EXTENDED_PRINTER_TYPE_DETERMINES_MOTOR_STEPS()
+    // Reset motor configuration if the printer types have different motors
+    if (extended_printer_type_has_400step_motors[old_index] != extended_printer_type_has_400step_motors[new_index]) {
+        {
+            auto &store = config_store();
+            auto transaction = store.get_backend().transaction_guard();
+            store.homing_sens_x.set_to_default();
+            store.homing_sens_y.set_to_default();
+            store.homing_bump_divisor_x.set_to_default();
+            store.homing_bump_divisor_y.set_to_default();
+
+        #if HAS_PRECISE_HOMING()
+            store.precise_homing_sample_history.set_all_to_default();
+            store.precise_homing_sample_history_index.set_all_to_default();
+        #endif
+        }
+
+        // Reset XY homing sensitivity
+        marlin_client::gcode("M914 X Y");
+
+        // XY motor currents
+        marlin_client::gcode_printf("M906 X%u Y%u", get_rms_current_ma_x(), get_rms_current_ma_y());
+
+        // XY motor microsteps
+        marlin_client::gcode_printf("M350 X%u Y%u", get_microsteps_x(), get_microsteps_y());
+    }
+    #endif
+
+    return true;
+}
+#endif
+
+#if HAS_EMERGENCY_STOP()
+static bool user_made_informed_decision_to_disable_door_sensor() {
+    const Response response = MsgBoxWarning(
+        _(
+            "Caution! Disabling the door sensor may lead to injury or printer damage. "
+            "Proceeding means you accept full responsibility. "
+            "We are not liable for any harm or damages."),
+        { Response::Disable, Response::Cancel },
+        1 /* default is to cancel in order to prevent double clicks */);
+    return response == Response::Disable;
+}
+
+MI_EMERGENCY_STOP_ENABLE::MI_EMERGENCY_STOP_ENABLE()
+    : WI_ICON_SWITCH_OFF_ON_t(config_store().emergency_stop_enable.get(), _(label), nullptr, is_enabled_t::yes, is_hidden_t::no) {};
+
+void MI_EMERGENCY_STOP_ENABLE::OnChange([[maybe_unused]] size_t old_index) {
+    if (value()) {
+        config_store().emergency_stop_enable.set(true);
+    } else {
+        if (user_made_informed_decision_to_disable_door_sensor()) {
+            config_store().emergency_stop_enable.set(false);
+        } else {
+            // revert the change in GUI and keep config store intact
+            set_value(true);
+        }
+    }
+}
+#endif
+
+#if HAS_CHAMBER_VENTS()
+static constexpr const char *chamber_vent_control_items[] = {
+    N_("Off"),
+    N_("Auto"),
+    N_("Manual"),
+};
+
+static_assert(VentControl(0) == VentControl::off && VentControl(1) == VentControl::automatic && VentControl(2) == VentControl::manual, "menu item misalignment");
+
+MI_SWITCH_VENT_MECHANISM::MI_SWITCH_VENT_MECHANISM()
+    : MenuItemSwitch(_("Chamber Vent Control"), chamber_vent_control_items, std::to_underlying(config_store().get_vent_control())) {}
+
+void MI_SWITCH_VENT_MECHANISM::OnChange([[maybe_unused]] size_t old_index) {
+    config_store().set_vent_control(VentControl(get_index()));
+}
+#endif
+
+#if HAS_PRECISE_HOMING_COREXY()
+constexpr const EnumArray<Tristate::Value, const char *, 3> ask_always_never_texts {
+    { Tristate::no, N_("Never") },
+    { Tristate::yes, N_("Auto") },
+    { Tristate::other, N_("Ask") },
+};
+
+MI_AUTO_PRECISE_HOMING_CALIBRATION::MI_AUTO_PRECISE_HOMING_CALIBRATION()
+    : MenuItemSwitch(_("Homing Calibration"), ask_always_never_texts, config_store().auto_recalibrate_precise_homing.get().value) {
+}
+
+void MI_AUTO_PRECISE_HOMING_CALIBRATION::OnChange(size_t) {
+    config_store().auto_recalibrate_precise_homing.set(static_cast<Tristate::Value>(get_index()));
+}
+#endif

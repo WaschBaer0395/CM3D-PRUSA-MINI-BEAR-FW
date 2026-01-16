@@ -23,14 +23,25 @@
 #include "../gcode.h"
 #include "../../core/serial.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M118: Display a message in the host console.
+ *### M118: Display a message in the host console <a href="https://reprap.org/wiki/G-code#M118:_Echo_message_on_host">M118: Echo message on host</a>
  *
- *  A1  Prepend '// ' for an action command, as in OctoPrint
- *  E1  Have the host 'echo:' the text
- *  Pn  Redirect to another serial port
- *        0 : Announce to all ports
- *      1-9 : Serial ports 1 to 9
+ *#### Usage
+ *
+ *    M118 [ A1 | E1 | Pn ] [string]
+ *
+ *#### Parameters
+ *
+ *  - `A1` - Prepend '// ' for an action command, as in OctoPrint
+ *  - `E1` - Have the host 'echo:' the text
+ *  - `Pn` - Redirect to another serial port
+ *    - `0` - Announce to all ports
+ *    - `1-9` - Serial ports 1 to 9
+ * - `[string]` - Message string. If omitted, a blank line will be sent.
  */
 void GcodeSuite::M118() {
   bool hasE = false, hasA = false;
@@ -73,3 +84,5 @@ void GcodeSuite::M118() {
     serial_port_index = old_serial;
   #endif
 }
+
+/** @}*/

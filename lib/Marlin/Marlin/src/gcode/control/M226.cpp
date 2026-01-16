@@ -24,8 +24,21 @@
 #include "../../Marlin.h" // for pin_is_protected and idle()
 #include "../../module/stepper.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M226: Wait until the specified pin reaches the state required (M226 P<pin> S<state>)
+ *### M226: Wait for Pin State <a href="https://reprap.org/wiki/G-code#M226:_Wait_for_Pin_State">M226: Wait for Pin State</a>
+ *
+ *#### Usage
+ *
+ *    M226 [ P | S ]
+ *
+ *#### Parameters
+ *
+ * - `P` - Pin
+ * - `S` - State
  */
 void GcodeSuite::M226() {
   if (parser.seen('P')) {
@@ -45,8 +58,10 @@ void GcodeSuite::M226() {
           case 0: target = LOW; break;
           case -1: target = !extDigitalRead(pin); break;
         }
-        while (int(extDigitalRead(pin)) != target) idle();
+        while (int(extDigitalRead(pin)) != target) idle(true);
       }
     } // pin_state -1 0 1 && pin > -1
   } // parser.seen('P')
 }
+
+/** @}*/

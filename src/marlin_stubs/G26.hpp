@@ -1,32 +1,39 @@
-// G26.hpp
+/**
+ * @file G26.hpp
+ * @brief first layer calibration, must be run within selftest only
+ */
 
 #pragma once
 
 #include "../../lib/Marlin/Marlin/src/module/planner.h"
 
-class FirstLayer : public FSM_Holder {
+class FirstLayer {
 private:
-    static bool isPrinting_; /// ensures proper progress state in marlin_server
+    static FirstLayer *instance_;
 
     uint16_t total_lines = 1;
     uint16_t current_line = 0;
-    uint8_t last_progress = 0;
 
     void finish_printing();
 
 public:
-    FirstLayer()
-        : FSM_Holder(ClientFSM::FirstLayer, 0) { isPrinting_ = true; }
+    FirstLayer() {
+        assert(!instance_);
+        instance_ = this;
+    }
 
     ~FirstLayer() {
-        isPrinting_ = false;
+        assert(instance_ == this);
+        instance_ = nullptr;
         disable_all_steppers();
     }
 
-    static bool isPrinting() {
-        return isPrinting_;
+    static FirstLayer *instance() {
+        return instance_;
     }
 
+    uint8_t progress_percent() const;
+    void run();
     void wait_for_move() {
         planner.synchronize();
     }
@@ -36,9 +43,6 @@ public:
     /// \param e is relative extrusion
     /// \param f is defined in millimeters per minute (like in G code)
     void plan_destination(const float x, const float y, const float z, const float e, const float f);
-
-    /// increases progress by 1 line and sends it to Marlin
-    void inc_progress();
 
     /// Puts the destination into the Marlin planner and waits for the end of the move
     void go_to_destination(const float x, const float y, const float z, const float e, const float f);

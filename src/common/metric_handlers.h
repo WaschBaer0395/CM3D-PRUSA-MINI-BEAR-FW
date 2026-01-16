@@ -5,15 +5,12 @@
 extern "C" {
 #endif //__cplusplus
 
-enum {
-    METRIC_HANDLER_UART_ID,
-    METRIC_HANDLER_SYSLOG_ID,
-};
+/// Set up the metrics handlers based on config store
+void metrics_reconfigure();
 
-extern metric_handler_t metric_handler_uart;
-extern metric_handler_t metric_handler_syslog;
+bool are_metrics_enabled();
 
-void metric_handler_syslog_configure(const char *ip, int port);
+extern void metric_handler(metric_point_t *point);
 
 #ifdef __cplusplus
 }

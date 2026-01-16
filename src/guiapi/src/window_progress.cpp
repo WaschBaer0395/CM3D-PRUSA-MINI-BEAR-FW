@@ -1,22 +1,22 @@
-// window_progress.cpp
 #include "window_progress.hpp"
+
+#include "display.hpp"
 #include "gui.hpp"
 #include <algorithm>
 
-static const constexpr uint8_t WINDOW_PROGRESS_MAX_TEXT = 16;
-
 /*****************************************************************************/
-//window_numberless_progress_t
-window_numberless_progress_t::window_numberless_progress_t(window_t *parent, Rect16 rect, color_t cl_progress, color_t cl_back)
-    : AddSuperWindow<window_t>(parent, rect)
-    , color_progress(cl_progress) {
+// window_numberless_progress_t
+window_numberless_progress_t::window_numberless_progress_t(window_t *parent, Rect16 rect, Color cl_progress, Color cl_back, int corner_radius)
+    : window_t(parent, rect)
+    , color_progress(cl_progress)
+    , corner_radius(corner_radius) {
     SetProgressInPixels(0);
-    color_back = cl_back;
+    SetBackColor(cl_back);
 }
 
 void window_numberless_progress_t::SetProgressInPixels(uint16_t px) {
-    if (px != flags.mem_space_u16) {
-        flags.mem_space_u16 = px;
+    if (px != progress_in_pixels) {
+        progress_in_pixels = px;
         Invalidate();
     }
 }
@@ -25,14 +25,14 @@ void window_numberless_progress_t::SetProgressPercent(float val) {
     const float min = 0;
     const float max = 100;
     const float value = std::max(min, std::min(val, max));
-    SetProgressInPixels((value * rect.Width()) / max);
+    SetProgressInPixels((value * Width()) / max);
 }
 
 uint16_t window_numberless_progress_t::GetProgressPixels() const {
-    return flags.mem_space_u16;
+    return progress_in_pixels;
 }
 
-void window_numberless_progress_t::SetColor(color_t clr) {
+void window_numberless_progress_t::SetColor(Color clr) {
     if (clr != color_progress) {
         color_progress = clr;
         Invalidate();
@@ -40,55 +40,161 @@ void window_numberless_progress_t::SetColor(color_t clr) {
 }
 
 void window_numberless_progress_t::unconditionalDraw() {
-    Rect16 rc = rect;
+    Rect16 rc = GetRect();
     const uint16_t progress_w = std::min(GetProgressPixels(), uint16_t(rc.Width()));
     rc += Rect16::Left_t(progress_w);
     rc -= Rect16::Width_t(progress_w);
-    if (rc.Width())
-        display::FillRect(rc, color_back);
-    rc = rect.Left();
-    rc = Rect16::Width_t(progress_w);
-    if (rc.Width())
-        display::FillRect(rc, color_progress);
-}
 
-/*****************************************************************************/
-//window_progress_t
-void window_progress_t::SetValue(float val) {
-    const float value = std::max(min, std::min(val, max));
-    numb.SetValue(value);
-    progr.SetProgressPercent(value);
-}
+    Color screen_background = GetParent() ? GetParent()->GetBackColor() : GetBackColor();
 
-window_progress_t::window_progress_t(window_t *parent, Rect16 rect, uint16_t h_progr, color_t cl_progress, color_t cl_back)
-    : AddSuperWindow<window_frame_t>(parent, rect)
-    , progr(this, { rect.Left(), rect.Top(), rect.Width(), h_progr }, cl_progress, cl_back)
-    , numb(this, { rect.Left(), int16_t(rect.Top() + h_progr), rect.Width(), uint16_t(rect.Height() - h_progr) })
-    , min(0)
-    , max(100) {
-    Disable();
-    numb.format = "%.0f%%";
-    numb.SetAlignment(ALIGN_CENTER);
-}
-
-void window_progress_t::SetFont(font_t *val) {
-    numb.SetFont(val);
-}
-
-void window_progress_t::SetProgressColor(color_t clr) {
-    progr.SetColor(clr);
-}
-
-void window_progress_t::SetNumbColor(color_t clr) {
-    numb.SetColor(clr);
-}
-
-void window_progress_t::SetProgressHeight(uint16_t height) {
-    if (progr.rect.Height() != height) {
-        const Rect16::Height_t h(height);
-        progr.rect = h;
-        progr.Invalidate();
-        numb.rect = (rect - h).Height();
-        numb.Invalidate();
+    // Draw background
+    if (rc.Width()) {
+        if (corner_radius) {
+            uint8_t corner_flag = Left() == rc.Left() ? MIC_ALL_CORNERS : MIC_TOP_RIGHT | MIC_BOT_RIGHT;
+            display::draw_rounded_rect(rc, screen_background, GetBackColor(), corner_radius, corner_flag);
+        } else {
+            display::fill_rect(rc, GetBackColor());
+        }
     }
+    rc = Left();
+    rc = Rect16::Width_t(progress_w);
+    // Draw progress
+    if (rc.Width()) {
+        if (corner_radius) {
+            Color secondary_clr = GetProgressPixels() == GetRect().Width() ? screen_background : GetBackColor();
+            display::draw_rounded_rect(rc, screen_background, color_progress, corner_radius,
+                MIC_ALL_CORNERS | MIC_ALT_CL_TOP_RIGHT | MIC_ALT_CL_BOT_RIGHT, secondary_clr);
+        } else {
+            display::fill_rect(rc, color_progress);
+        }
+    }
+}
+
+/*******************************************************************************/
+// window_vertical_progress_t
+window_vertical_progress_t::window_vertical_progress_t(window_t *parent, Rect16 rect, Color cl_progress, Color cl_back)
+    : window_t(parent, rect)
+    , color_progress(cl_progress) {
+    SetBackColor(cl_back);
+}
+
+void window_vertical_progress_t::SetProgressColor(Color clr) {
+    if (clr != color_progress) {
+        color_progress = clr;
+        Invalidate();
+    }
+}
+
+void window_vertical_progress_t::SetProgressWidth(uint16_t width) {
+    if (width != Width()) {
+        const Rect16::Width_t w(width);
+        SetRect(Rect16(Left(), Top(), w, Height()));
+        Invalidate();
+    }
+}
+
+void window_vertical_progress_t::SetProgressInPixels(uint16_t px) {
+    if (px != progress_in_pixels) {
+        progress_in_pixels = px;
+        Invalidate();
+    }
+}
+
+void window_vertical_progress_t::SetProgressPercent(uint8_t val) {
+    const uint8_t min = 0;
+    const uint8_t max = 100;
+    const uint8_t value = std::max(min, std::min(val, max));
+    SetProgressInPixels(uint16_t((value * Height()) / max));
+}
+
+uint16_t window_vertical_progress_t::GetProgressPixels() const {
+    return progress_in_pixels;
+}
+
+void window_vertical_progress_t::unconditionalDraw() {
+    Rect16 rc = GetRect();
+    const uint16_t progress_h = std::min(GetProgressPixels(), uint16_t(Height()));
+    rc = Rect16::Height_t(Height() - progress_h);
+    if (rc.Height()) {
+        display::fill_rect(rc, GetBackColor());
+    }
+    rc = Rect16::Top_t(Height() - progress_h);
+    rc = Rect16::Height_t(progress_h);
+    if (rc.Height()) {
+        display::fill_rect(rc, color_progress);
+    }
+}
+
+WindowProgressCircles::WindowProgressCircles(window_t *parent, Rect16 rect, uint8_t max_circles_)
+    : window_t(parent, rect)
+    , max_circles(max_circles_) {
+    assert(max_circles > 0);
+    assert(rect.Width() >= (rect.Height() - 1) * max_circles);
+}
+
+void WindowProgressCircles::unconditionalDraw() {
+    assert(!flags.has_round_corners); // Not implemented
+
+    window_t::unconditionalDraw(); // draws background
+
+    const auto &drawn_rect { GetRect() };
+    const auto delimiter = (drawn_rect.Width() - max_circles * (drawn_rect.Height())) / (max_circles);
+    int16_t current_x { static_cast<int16_t>(drawn_rect.Left() + delimiter / 2) };
+
+    for (size_t i = 0; i < max_circles; ++i) {
+        Rect16 circle_to_draw {
+            current_x,
+            drawn_rect.Top(),
+            static_cast<Rect16::Width_t>(drawn_rect.Height()),
+            static_cast<Rect16::Height_t>(drawn_rect.Height()),
+        };
+        const Color color = i == current_index || (!one_circle_mode && i < current_index) ? color_on : color_off;
+
+        const auto corner_radius =
+            [&]() {
+                if (circle_to_draw.Height() <= 8) {
+                    return circle_to_draw.Height() * 80 / 100;
+                } else if (circle_to_draw.Height() < 15) {
+                    return circle_to_draw.Height() * 70 / 100;
+                } else if (circle_to_draw.Height() < 25) {
+                    return circle_to_draw.Height() * 60 / 100;
+                } else {
+                    return circle_to_draw.Height() * 52 / 100;
+                }
+            }();
+
+        // We don't have a simple way of drawing circle on the screen, but drawing rounded rectangle with the magic constant (found experimentally) produces 'good enough' circles
+        display::draw_rounded_rect(circle_to_draw, GetBackColor(), color, corner_radius, MIC_ALL_CORNERS);
+
+        current_x += drawn_rect.Height() + delimiter;
+    }
+}
+
+void WindowProgressCircles::set_index(uint8_t new_index) {
+    if (current_index == new_index) {
+        return;
+    }
+    current_index = new_index;
+    Invalidate();
+}
+
+void WindowProgressCircles::set_on_color(Color clr) {
+    color_on = clr;
+    Invalidate();
+}
+
+void WindowProgressCircles::set_off_color(Color clr) {
+    color_off = clr;
+    Invalidate();
+}
+
+void WindowProgressCircles::set_one_circle_mode(bool new_mode) {
+    one_circle_mode = new_mode;
+    Invalidate();
+}
+
+void WindowProgressCircles::set_max_circles(uint8_t new_max_circles) {
+    assert(new_max_circles > 0);
+    max_circles = new_max_circles;
+    Invalidate();
 }

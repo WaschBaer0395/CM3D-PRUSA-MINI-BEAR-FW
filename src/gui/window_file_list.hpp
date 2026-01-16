@@ -8,67 +8,74 @@
 #pragma once
 
 #include <stdbool.h>
+#include <bitset>
 
+#include <buddy/filename_defs.h>
 #include "window.hpp"
-#include "ff.h"
-#include "file_list_defs.h"
 #include "display_helper.h"
-#include "../common/marlin_vars.h" // for FILE_PATH_MAX_LEN
-#include "lazyfilelist.h"
+#include "lazyfilelist.hpp"
 #include "text_roll.hpp"
 #include "WindowMenuItems.hpp"
-
-using LDV9 = LazyDirView<9>;
+#include <window_menu_virtual.hpp>
+#include <guiconfig/GuiDefaults.hpp>
+#include <array>
 
 // This enum value is stored to eeprom as file sort settings
 typedef enum {
     WF_SORT_BY_TIME,
     WF_SORT_BY_NAME
-
 } WF_Sort_t;
 
-extern WF_Sort_t screen_filebrowser_sort;
+class GuiFileSort {
+    WF_Sort_t sort;
 
-inline LDV9 *LDV_Get(void) {
-    static LDV9 ldv;
-    return &ldv;
-}
+    GuiFileSort();
+    GuiFileSort(const GuiFileSort &) = delete;
+    static GuiFileSort &instance();
 
-class FL_LABEL : public WI_LABEL_t {
 public:
-    FL_LABEL(string_view_utf8 label, uint16_t id_icon)
-        : WI_LABEL_t(label, id_icon, is_enabled_t::yes, is_hidden_t::no) {}
-
-protected:
-    virtual void click(IWindowMenu &window_menu) {}
+    static WF_Sort_t Get();
+    static void Set(WF_Sort_t val);
 };
 
-struct window_file_list_t : public window_aligned_t {
-    color_t color_text;
-    font_t *font;
-    padding_ui8_t padding;
-    txtroll_t roll;
-    int count;                        // total number of files/entries in a dir
-    int index;                        // selected index - cursor position within the visible items
-    LDV9 *ldv;                        // I'm a C-pig and I need a pointer to my LazyDirView class instance ... subject to change when this gets rewritten to C++
-    char sfn_path[FILE_PATH_MAX_LEN]; // this is a Short-File-Name path where we start the file dialog
-    window_file_list_t(window_t *parent, Rect16 rect);
-    void Load(WF_Sort_t sort, const char *sfnAtCursor, const char *topSFN);
+class FL_LABEL final : public IWindowMenuItem {
+public:
+    FL_LABEL(const string_view_utf8 &label, const img::Resource *icon)
+        : IWindowMenuItem(label, icon, is_enabled_t::yes, is_hidden_t::no) {}
+};
+
+class window_file_list_t : public WindowMenuVirtual<WindowMenuItem, MI_RETURN> {
 
 public:
-    void SetItemIndex(int index);
+    static constexpr const char *root = "/usb";
+    static constexpr int max_max_items_on_screen = GuiDefaults::FileBrowserRect.Height() / item_height();
+    using LDV = LazyDirView<max_max_items_on_screen>;
+
+public:
+    inline int item_count() const final {
+        return ldv.TotalFilesCount();
+    }
+
+    void set_scroll_offset(int set) final;
+
+public:
+    // TODO private
+    char sfn_path[FILE_PATH_BUFFER_LEN]; // this is a Short-File-Name path where we start the file dialog
+
+public:
+    window_file_list_t(window_t *parent, Rect16 rc); // height is calculated from LazyDirViewSize
+    void Load(WF_Sort_t sort, const char *sfnAtCursor, const char *topSFN);
+
     const char *TopItemSFN();
-    const char *CurrentLFN(bool *isFile);
-    const char *CurrentSFN(bool *isFile);
+    const char *CurrentLFN(bool *isFile = nullptr) const;
+    const char *CurrentSFN(bool *isFile = nullptr) const;
 
     /// @return true if path is either empty or contains just a "/"
     static bool IsPathRoot(const char *path);
 
 protected:
-    virtual void windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t event, void *param) override;
+    void setup_item(ItemVariant &variant, int index) final;
 
-private:
-    virtual void unconditionalDraw() override;
-    void inc(int dif);   ///< negative values move cursor in opposite direction
-    FL_LABEL activeItem; ///< used for text rolling
+protected:
+    LDV ldv;
 };

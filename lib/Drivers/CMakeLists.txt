@@ -1,2 +1,5 @@
 add_subdirectory(CMSIS)
-add_subdirectory(STM32F4xx_HAL_Driver)
+include(AddStm32f4Hal.cmake)
+include(AddStm32g0Hal.cmake)
+include(AddStm32h5Hal.cmake)
+include(AddLIS2DH12.cmake)

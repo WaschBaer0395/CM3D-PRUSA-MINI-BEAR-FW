@@ -23,12 +23,31 @@
 #include "../gcode.h"
 #include "../../module/motion.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * M220: Set speed percentage factor, aka "Feed Rate" (M220 S95)
+ *### M220: Set speed percentage factor <a href="https://reprap.org/wiki/G-code#M220:_Set_speed_factor_override_percentage">M220: Set speed factor override percentage</a>
+ *
+ *#### Usage
+ *
+ *    M220 [ S | B | R ]
+ *
+ *#### Parameters
+ *
+ * - `S` - Set the feed rate percentage factor
+ * - `B` - Flag to back up the current factor (MMU)
+ * - `R` - Flag to restore the last-saved factor (MMU)
  */
 void GcodeSuite::M220() {
 
-  if (parser.seenval('S'))
-    feedrate_percentage = parser.value_int();
+  static int16_t backup_feedrate_percentage = 100;
+  const int16_t now_feedrate_perc = feedrate_percentage;
+  if (parser.boolval('R')) feedrate_percentage = backup_feedrate_percentage;
+  if (parser.boolval('B')) backup_feedrate_percentage = now_feedrate_perc;
+  if (parser.seenval('S')) feedrate_percentage = parser.value_int();
 
 }
+
+/** @}*/

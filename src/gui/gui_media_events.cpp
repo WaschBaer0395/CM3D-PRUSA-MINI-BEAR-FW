@@ -5,9 +5,10 @@
  */
 
 #include "gui_media_events.hpp"
-#include "marlin_client.h"
+#include "marlin_client.hpp"
 #include "marlin_events.h"
-#include "stm32f4xx_hal.h" //HAL_GetTick()
+#include "gui_time.hpp" //gui::GetTick()
+#include "usb_host/usb_host.h"
 
 GuiMediaEventsHandler &GuiMediaEventsHandler::Instance() {
     static GuiMediaEventsHandler ret;
@@ -15,11 +16,9 @@ GuiMediaEventsHandler &GuiMediaEventsHandler::Instance() {
 }
 
 GuiMediaEventsHandler::GuiMediaEventsHandler()
-    : start_time(HAL_GetTick())
-    , is_starting(true)
-    , one_click_printing(false)
+    : one_click_printing(false)
     , state_sent(true)
-    , media_state(state_t::unknown) {
+    , media_state(MediaState_t::unknown) {
 }
 
 void GuiMediaEventsHandler::Tick() {
@@ -27,43 +26,36 @@ void GuiMediaEventsHandler::Tick() {
 }
 
 void GuiMediaEventsHandler::tick() {
-    if (is_starting) {
-        if ((HAL_GetTick() - start_time) >= startup_finished_dellay) {
-            marlin_event_clr(MARLIN_EVT_MediaRemoved);
-            marlin_event_clr(MARLIN_EVT_MediaInserted);
-            marlin_event_clr(MARLIN_EVT_MediaError);
-            is_starting = false;
-            media_state = marlin_update_vars(MARLIN_VAR_MSK(MARLIN_VAR_MEDIAINS))->media_inserted ? state_t::inserted : state_t::removed;
-            // state_sent == true, set by ctor
-        }
-        return;
+    MediaState_t actual_state = MediaState_t::unknown;
+
+    if (marlin_client::event_clr(marlin_server::Event::MediaInserted)) {
+        actual_state = MediaState_t::inserted;
+    }
+    if (marlin_client::event_clr(marlin_server::Event::MediaRemoved)) {
+        actual_state = MediaState_t::removed;
+    }
+    if (marlin_client::event_clr(marlin_server::Event::MediaError)) {
+        actual_state = MediaState_t::error;
     }
 
-    // normal run
-    state_t actual_state = state_t::unknown;
-
-    if (marlin_event_clr(MARLIN_EVT_MediaInserted))
-        actual_state = state_t::inserted;
-    if (marlin_event_clr(MARLIN_EVT_MediaRemoved))
-        actual_state = state_t::removed;
-    if (marlin_event_clr(MARLIN_EVT_MediaError))
-        actual_state = state_t::error;
-
-    if (media_state == state_t::error)
-        return; //error must be cleared manually
+    if (media_state == MediaState_t::error) {
+        return; // error must be cleared manually
+    }
 
     switch (actual_state) {
-    case state_t::inserted:
-        one_click_printing = true;
+    case MediaState_t::inserted:
+        if (!usb_host::is_media_inserted_since_startup()) {
+            one_click_printing = true;
+        }
         state_sent = false;
         break; // update after break
-    case state_t::removed:
-    case state_t::error:
+    case MediaState_t::removed:
+    case MediaState_t::error:
         one_click_printing = false;
         state_sent = false;
         break; // update after break
     default:
-        return; //nothing happened, nothing to do .. just return
+        return; // nothing happened, nothing to do .. just return
     }
 
     media_state = actual_state; // update
@@ -75,25 +67,16 @@ bool GuiMediaEventsHandler::ConsumeOneClickPrinting() {
     return ret;
 }
 
-bool GuiMediaEventsHandler::IsStarting() {
-    return Instance().is_starting;
+bool GuiMediaEventsHandler::ConsumeSent(MediaState_t &ret) {
+    Tick(); // first update
+    ret = Instance().media_state; // remember
+    bool sent = Instance().state_sent;
+    if (ret != MediaState_t::error) {
+        Instance().state_sent = true; // set sent
+    }
+    return !sent;
 }
 
-void GuiMediaEventsHandler::ClrMediaError() {
-    //clear
-    if (Instance().media_state == state_t::error)
-        Instance().clr();
-    //update
-    Tick();
-    //clear again
-    if (Instance().media_state == state_t::error)
-        Instance().clr();
-}
-
-GuiMediaEventsHandler::state_t GuiMediaEventsHandler::ConsumeMediaState() {
-    Tick();                               //first update
-    state_t ret = Instance().media_state; //remember
-    if (ret != state_t::error)
-        Instance().state_sent = false; //clear sent
-    return ret;
+MediaState_t GuiMediaEventsHandler::Get() {
+    return Instance().media_state;
 }

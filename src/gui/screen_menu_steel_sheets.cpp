@@ -1,184 +1,148 @@
-#include "screen_menus.hpp"
-#include "gui.hpp"
-#include "app.h"
-#include "screen_menu.hpp"
-#include "i18n.h"
-#include "ScreenHandler.hpp"
+#include "screen_menu_steel_sheets.hpp"
 #include <type_traits>
-#include "eeprom.h"
-#include "screen_sheet_rename.hpp"
-#include "wizard/screen_wizard.hpp"
-#include "dbg.h"
-#include "marlin_client.h"
+#include <logging/log.hpp>
+#include <guiconfig/GuiDefaults.hpp>
+#include "ScreenHandler.hpp"
+#include "SteelSheets.hpp"
+#include <marlin_client.hpp>
+#include <dialog_text_input.hpp>
+#include <utils/string_builder.hpp>
 
-class ScreenMenuSteelSheets;
+void MI_SHEET_OFFSET::printExtension(Rect16 extension_rect, Color color_text, Color color_back, ropfn raster_op) const {
+    if (calib) {
+        WI_LAMBDA_LABEL_t::printExtension(extension_rect, color_text, color_back, raster_op);
+    } else {
 
-enum class profile_action : uint32_t {
-    Select = 1,
-    Calibrate = 2,
-    Reset = 3,
-    Rename = 4
-};
-
-using sheet_index_0 = std::integral_constant<uint32_t, 0>;
-using sheet_index_1 = std::integral_constant<uint32_t, 1>;
-using sheet_index_2 = std::integral_constant<uint32_t, 2>;
-using sheet_index_3 = std::integral_constant<uint32_t, 3>;
-using sheet_index_4 = std::integral_constant<uint32_t, 4>;
-using sheet_index_5 = std::integral_constant<uint32_t, 5>;
-using sheet_index_6 = std::integral_constant<uint32_t, 6>;
-using sheet_index_7 = std::integral_constant<uint32_t, 7>;
-
-class MI_SHEET_SELECT : public WI_LABEL_t {
-    static constexpr const char *const label = N_("Select");
-
-public:
-    MI_SHEET_SELECT()
-        : WI_LABEL_t(_(label), 0, is_enabled_t::no, is_hidden_t::no) {};
-
-protected:
-    virtual void click(IWindowMenu &window_menu) override {
-        Screens::Access()->Get()->WindowEvent(nullptr, GUI_event_t::CHILD_CLICK, (void *)profile_action::Select);
+        auto stringView = _(notCalibrated);
+        render_text_align(extension_rect, stringView, InfoFont, color_back,
+            (IsFocused() && IsEnabled()) ? COLOR_DARK_GRAY : COLOR_SILVER, GuiDefaults::MenuPaddingItems, Align_t::RightCenter());
     }
-};
+}
 
-class MI_SHEET_CALIBRATE : public WI_LABEL_t {
-    static constexpr const char *const label = N_("First Layer Calibration");
+MI_SHEET_OFFSET::MI_SHEET_OFFSET()
+    : WI_LAMBDA_LABEL_t(_(label), nullptr, is_enabled_t::yes, is_hidden_t::yes, [this](const std::span<char> &buffer) {
+        snprintf(buffer.data(), buffer.size(), "%.3f mm", static_cast<double>(this->offset));
+    }) {
+}
 
-public:
-    MI_SHEET_CALIBRATE()
-        : WI_LABEL_t(_(label), 0, is_enabled_t::yes, is_hidden_t::no) {};
+void MI_SHEET_OFFSET::SetOffset(float offs) {
+    calib = true;
+    offset = offs;
+}
 
-protected:
-    virtual void click(IWindowMenu &window_menu) override {
-        Screens::Access()->Get()->WindowEvent(nullptr, GUI_event_t::CHILD_CLICK, (void *)profile_action::Calibrate);
+void MI_SHEET_OFFSET::Reset() {
+    calib = false;
+}
+
+MI_SHEET_SELECT::MI_SHEET_SELECT()
+    : IWindowMenuItem(_(label)) {};
+
+void MI_SHEET_SELECT::click([[maybe_unused]] IWindowMenu &window_menu) {
+    Screens::Access()->Get()->WindowEvent(nullptr, GUI_event_t::CHILD_CLICK, (void *)profile_action::Select);
+}
+
+MI_SHEET_CALIBRATE::MI_SHEET_CALIBRATE()
+    : IWindowMenuItem(_(label)) {};
+
+void MI_SHEET_CALIBRATE::click([[maybe_unused]] IWindowMenu &window_menu) {
+    Screens::Access()->Get()->WindowEvent(nullptr, GUI_event_t::CHILD_CLICK, (void *)profile_action::Calibrate);
+}
+
+MI_SHEET_RENAME::MI_SHEET_RENAME()
+    : IWindowMenuItem(_(label)) {};
+
+void MI_SHEET_RENAME::click([[maybe_unused]] IWindowMenu &window_menu) {
+    Screens::Access()->Get()->WindowEvent(nullptr, GUI_event_t::CHILD_CLICK, (void *)profile_action::Rename);
+}
+
+MI_SHEET_RESET::MI_SHEET_RESET()
+    : IWindowMenuItem(_(label), nullptr, is_enabled_t::no) {};
+
+void MI_SHEET_RESET::click([[maybe_unused]] IWindowMenu &window_menu) {
+    Screens::Access()->Get()->WindowEvent(nullptr, GUI_event_t::CHILD_CLICK, (void *)profile_action::Reset);
+}
+
+SheetProfileMenuScreen::SheetProfileMenuScreen(uint32_t value)
+    : SheetProfileMenuScreen__({})
+    , value(value) {
+    if (SteelSheets::IsSheetCalibrated(value)) {
+        Item<MI_SHEET_SELECT>().set_enabled(true);
+        Item<MI_SHEET_RESET>().set_enabled(true);
+        Item<MI_SHEET_OFFSET>().SetOffset(SteelSheets::GetSheetOffset(value));
+        Item<MI_SHEET_OFFSET>().set_is_hidden(false);
     }
-};
-
-class MI_SHEET_RENAME : public WI_LABEL_t {
-    static constexpr const char *const label = N_("Rename");
-
-public:
-    MI_SHEET_RENAME()
-        : WI_LABEL_t(_(label), 0, is_enabled_t::yes, is_hidden_t::no) {};
-
-protected:
-    virtual void click(IWindowMenu &window_menu) override {
-        Screens::Access()->Get()->WindowEvent(nullptr, GUI_event_t::CHILD_CLICK, (void *)profile_action::Rename);
+    if (value == 0) {
+        Item<MI_SHEET_RESET>().set_enabled(false);
     }
-};
 
-class MI_SHEET_RESET : public WI_LABEL_t {
-    static constexpr const char *const label = N_("Reset");
+    update_title();
+}
 
-public:
-    MI_SHEET_RESET()
-        : WI_LABEL_t(_(label), 0, is_enabled_t::no, is_hidden_t::no) {};
+void SheetProfileMenuScreen::update_title() {
+    StringBuilder sb(label_buffer);
+    sb.append_string_view(_("Sheet: "));
+    SteelSheets::SheetName(value, std::span<char, SHEET_NAME_BUFFER_SIZE>(sb.alloc_chars(MAX_SHEET_NAME_LENGTH), SHEET_NAME_BUFFER_SIZE));
 
-protected:
-    virtual void click(IWindowMenu &window_menu) override {
-        Screens::Access()->Get()->WindowEvent(nullptr, GUI_event_t::CHILD_CLICK, (void *)profile_action::Reset);
+    header.SetText(string_view_utf8::MakeRAM(label_buffer.data()));
+}
+
+void SheetProfileMenuScreen::windowEvent(window_t *sender, GUI_event_t ev, void *param) {
+    if (ev != GUI_event_t::CHILD_CLICK) {
+        ScreenMenu::windowEvent(sender, ev, param);
+        return;
     }
-};
+    profile_action action = static_cast<profile_action>((uint32_t)param);
+    switch (action) {
 
-using SheetProfileMenuScreen = ScreenMenu<EHeader::Off, EFooter::On, HelpLines_None, MI_RETURN, MI_SHEET_SELECT, MI_SHEET_CALIBRATE,
-#if _DEBUG //todo remove #if _DEBUG after rename is finished
-    MI_SHEET_RENAME,
-#endif // _DEBUG
-    MI_SHEET_RESET>;
-
-template <typename Index>
-class SheetProfileMenuScreenT : public SheetProfileMenuScreen {
-public:
-    constexpr static const char *label = N_("Sheet Profile");
-    using index_type = Index;
-    SheetProfileMenuScreenT()
-        : SheetProfileMenuScreen(_(label)) {
-        if (sheet_is_calibrated(Index::value)) {
-            Item<MI_SHEET_SELECT>().Enable();
-            Item<MI_SHEET_RESET>().Enable();
+    case profile_action::Reset:
+        if (SteelSheets::ResetSheet(value)) {
+            Item<MI_SHEET_RESET>().set_enabled(false);
+            Item<MI_SHEET_SELECT>().set_enabled(false);
+            Item<MI_SHEET_OFFSET>().Reset();
         }
-        if (Index::value == 0)
-            Item<MI_SHEET_RESET>().Disable();
-    }
+        break;
 
-protected:
-    virtual void windowEvent(EventLock /*has private ctor*/, window_t *sender, GUI_event_t ev, void *param) override {
-        _dbg("SheetProfile::event");
-        if (ev != GUI_event_t::CHILD_CLICK) {
-            SuperWindowEvent(sender, ev, param);
-            return;
+    case profile_action::Select:
+        SteelSheets::SelectSheet(value);
+        break;
+
+    case profile_action::Calibrate: {
+        const auto original_sheet = config_store().active_sheet.get();
+        SteelSheets::SelectSheet(value);
+        marlin_client::test_start_with_data(stmFirstLayer, selftest::FirstLayerCalibrationData { .previous_sheet = original_sheet });
+        Item<MI_SHEET_OFFSET>().SetOffset(SteelSheets::GetSheetOffset(value));
+    } break;
+
+    case profile_action::Rename: {
+        std::array<char, SHEET_NAME_BUFFER_SIZE> new_sheet_name;
+        SteelSheets::SheetName(value, new_sheet_name);
+
+        if (DialogTextInput::exec(_("Sheet name"), new_sheet_name)) {
+            SteelSheets::RenameSheet(value, new_sheet_name.data(), new_sheet_name.size());
+            update_title();
         }
-        profile_action action = static_cast<profile_action>((uint32_t)param);
-        switch (action) {
-        case profile_action::Reset:
-            if (sheet_reset(Index::value)) {
-                Item<MI_SHEET_RESET>().Disable();
-                Item<MI_SHEET_SELECT>().Disable();
-                _dbg("MI_SHEET_RESET OK");
-            } else
-                _dbg("MI_SHEET_RESET FAIL!");
-            break;
-        case profile_action::Select:
-            _dbg("MI_SHEET_SELECT");
-            sheet_select(Index::value);
-            marlin_set_z_offset(variant8_get_flt(eeprom_get_var(EEVAR_ZOFFSET)));
-            break;
-        case profile_action::Calibrate:
-            _dbg("MI_SHEET_CALIBRATE");
-            sheet_calibrate(Index::value);
-            ScreenWizard::Run(wizard_run_type_t::firstlay);
-            break;
-        case profile_action::Rename:
-            _dbg("MI_SHEET_RENAME");
-#if _DEBUG //todo remove #if _DEBUG after rename is finished
-            Screens::Access()->Open([]() {
-                screen_sheet_rename_t::index(Index::value);
-                return ScreenFactory::Screen<screen_sheet_rename_t>();
-            });
-#endif // _DEBUG
-            break;
-        default:
-            _dbg("Click: %d\n", static_cast<uint32_t>(action));
-            break;
-        }
+        break;
     }
-};
 
-template <typename Index>
-struct profile_record_t : public WI_LABEL_t {
-    char name[MAX_SHEET_NAME_LENGTH];
-    profile_record_t()
-        : WI_LABEL_t(string_view_utf8::MakeNULLSTR(), 0, is_enabled_t::yes, is_hidden_t::no) {
-        memset(name, 0, MAX_SHEET_NAME_LENGTH);
-        sheet_name(Index::value, name, MAX_SHEET_NAME_LENGTH);
-        // string_view_utf8::MakeRAM is safe. "name" is member var, exists until profile_record_t is destroyed
-        SetLabel(string_view_utf8::MakeRAM((const uint8_t *)name));
-    };
-
-protected:
-    virtual void click(IWindowMenu &window_menu) override {
-        Screens::Access()->Open([]() {
-            return ScreenFactory::Screen<SheetProfileMenuScreenT<Index>>();
-        });
+    default:
+        break;
     }
-};
+}
 
-using Screen = ScreenMenu<EHeader::Off, EFooter::On, HelpLines_None, MI_RETURN
-#if (EEPROM_FEATURES & EEPROM_FEATURE_SHEETS)
-    ,
-    profile_record_t<sheet_index_0>, profile_record_t<sheet_index_1>, profile_record_t<sheet_index_2>, profile_record_t<sheet_index_3>, profile_record_t<sheet_index_4>, profile_record_t<sheet_index_5>, profile_record_t<sheet_index_6>, profile_record_t<sheet_index_7>
-#endif
-    >;
+ScreenMenuSteelSheets::ScreenMenuSteelSheets()
+    : ScreenMenuSteelSheets__(_(label)) {
+}
 
-class ScreenMenuSteelSheets : public Screen {
-public:
-    constexpr static const char *label = N_("Steel Sheets");
-    ScreenMenuSteelSheets()
-        : Screen(_(label)) {
-    }
-};
+I_MI_SHEET_PROFILE::I_MI_SHEET_PROFILE(int sheet_index)
+    : IWindowMenuItem({}, Rect16::W_t(16), nullptr, is_enabled_t::yes, is_hidden_t::no)
+    , sheet_index(sheet_index) {
 
-ScreenFactory::UniquePtr GetScreenMenuSteelSheets() {
-    return ScreenFactory::Screen<ScreenMenuSteelSheets>();
+    SteelSheets::SheetName(sheet_index, label_str);
+    // string_view_utf8::MakeRAM is safe. "label_str" is a member var and exists until I_MI_SHEET_PROFILE is destroyed
+    SetLabel(string_view_utf8::MakeRAM(label_str.data()));
+}
+
+// ScreenFactory::Screen depends on ProfileRecord following code cannot stay in header (be template)
+void I_MI_SHEET_PROFILE::click([[maybe_unused]] IWindowMenu &window_menu) {
+    Screens::Access()->Open(ScreenFactory::ScreenWithArg<SheetProfileMenuScreen>(sheet_index));
 }

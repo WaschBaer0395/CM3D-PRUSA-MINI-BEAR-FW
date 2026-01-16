@@ -21,6 +21,7 @@
  */
 
 #include "../../inc/MarlinConfig.h"
+#include "module/motion.h"
 
 #if HAS_BED_PROBE
 
@@ -29,18 +30,26 @@
 #include "../../module/probe.h"
 #include "../../feature/bedlevel/bedlevel.h"
 
+/** \addtogroup G-Codes
+ * @{
+ */
+
 /**
- * G30: Do a single Z probe at the current XY
+ *### G30: Do a single Z probe at the current XY <a href="https://reprap.org/wiki/G-code#G30:_Single_Z-Probe">G30: Single Z-Probe</a>
  *
- * Parameters:
+ *#### Usage
  *
- *   X   Probe X position (default current X)
- *   Y   Probe Y position (default current Y)
- *   E   Engage the probe for each probe (default 1)
+ *    G30 [ X | Y | E ]
+ *
+ *#### Parameters
+ *
+ *  - `X` - Probe X position (default current X)
+ *  - `Y` - Probe Y position (default current Y)
+ *  - `E` - Engage the probe for each probe (default 1)
  */
 void GcodeSuite::G30() {
-  const xy_pos_t pos = { parser.linearval('X', current_position.x + probe_offset.x),
-                         parser.linearval('Y', current_position.y + probe_offset.y) };
+  const xy_pos_t pos = { parser.linearval('X', current_position.x + probe_offset.x + TERN0(HAS_HOTEND_OFFSET, hotend_currently_applied_offset.x)),
+                         parser.linearval('Y', current_position.y + probe_offset.y + TERN0(HAS_HOTEND_OFFSET, hotend_currently_applied_offset.y)) };
 
   if (!position_is_reachable_by_probe(pos)) return;
 
@@ -64,5 +73,7 @@ void GcodeSuite::G30() {
 
   report_current_position();
 }
+
+/** @}*/
 
 #endif // HAS_BED_PROBE

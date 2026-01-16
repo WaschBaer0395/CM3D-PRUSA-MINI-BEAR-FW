@@ -3,45 +3,44 @@
 #include "window_arrows.hpp"
 #include "gui.hpp"
 #include "guitypes.hpp"
-#include "resource.h"
+#include "img_resources.hpp"
 
 /// must be same size
-const uint16_t WindowArrows::id_res_grey_up = IDR_PNG_arrow_up_8px;
-const uint16_t WindowArrows::id_res_grey_down = IDR_PNG_arrow_down_8px;
-const uint16_t WindowArrows::id_res_orange_up = IDR_PNG_arrow_up_orange_8px;
-const uint16_t WindowArrows::id_res_orange_down = IDR_PNG_arrow_down_orange_8px;
+static constexpr const img::Resource *id_res_grey_up = &img::arrow_up_12x12;
+static constexpr const img::Resource *id_res_grey_down = &img::arrow_down_12x12;
+static constexpr const img::Resource *id_res_orange_up = &img::arrow_up_orange_12x12;
+static constexpr const img::Resource *id_res_orange_down = &img::arrow_down_orange_12x12;
 
 /// Icon rect is increased by padding, icon is centered inside it
 WindowArrows::WindowArrows(window_t *parent, point_i16_t pt, padding_ui8_t padding)
     : window_aligned_t(
         parent,
         [pt, padding] {
-            size_ui16_t sz = window_icon_t::CalculateMinimalSize(WindowArrows::id_res_grey_up);
-            if (!(sz.h && sz.w))
+            size_ui16_t sz = { id_res_grey_up->w, id_res_grey_up->h };
+            if (!(sz.h && sz.w)) {
                 return Rect16();
+            }
             return Rect16(pt,
                 sz.w + padding.left + padding.right,
                 sz.h + padding.top + padding.bottom);
-        }()) {
-    SetState(WindowArrows::State_t::undef);
+        }())
+    , state(WindowArrows::State_t::undef) {
 }
 
 WindowArrows::State_t WindowArrows::GetState() const {
-    return static_cast<WindowArrows::State_t>(flags.mem_array_u08[1]);
+    return state;
 }
 
-//there is a free space in window_t flags, store state in it
 void WindowArrows::SetState(WindowArrows::State_t s) {
-    const uint8_t state = static_cast<uint8_t>(s);
-    if (state != flags.mem_array_u08[1]) {
-        flags.mem_array_u08[1] = state;
+    if (s != state) {
+        state = s;
         Invalidate();
     }
 }
 
 void WindowArrows::unconditionalDraw() {
-    uint16_t id_res1;
-    uint16_t id_res2;
+    const img::Resource *id_res1;
+    const img::Resource *id_res2;
     switch (GetState()) {
     case WindowArrows::State_t::up:
         id_res1 = id_res_orange_up;
@@ -57,6 +56,6 @@ void WindowArrows::unconditionalDraw() {
         id_res2 = id_res_grey_down;
         break;
     }
-    render_icon_align(rect, id_res1, color_back, GetAlignment());
-    render_icon_align(rect + Rect16::Top_t(12), id_res2, color_back, GetAlignment());
+    render_icon_align(GetRect(), id_res1, GetBackColor(), GetAlignment());
+    render_icon_align(GetRect() + Rect16::Top_t(12), id_res2, GetBackColor(), GetAlignment());
 }

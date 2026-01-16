@@ -1,35 +1,36 @@
+/**
+ * @file
+ */
 #include <algorithm>
 
-#include "../../lib/Marlin/Marlin/src/inc/MarlinConfig.h"
-#include "../../lib/Marlin/Marlin/src/feature/host_actions.h"
-#include "../../lib/Marlin/Marlin/src/feature/safety_timer.h"
-#include "../../lib/Marlin/Marlin/src/gcode/gcode.h"
-#include "../../lib/Marlin/Marlin/src/module/motion.h"
 #include "../../lib/Marlin/Marlin/src/module/temperature.h"
-#include "../../lib/Marlin/Marlin/src/Marlin.h"
+#include "../../lib/Marlin/Marlin/src/gcode/lcd/M73_PE.h"
+#include "../../lib/Marlin/Marlin/src/gcode/gcode.h"
 #include "marlin_server.hpp"
-#include "client_fsm_types.h"
 #include "PrusaGcodeSuite.hpp"
+#include "filament.hpp"
 #include "G26.hpp"
 #include "cmath_ext.h"
+#include <config_store/store_instance.hpp>
 
-static const constexpr float filamentD = 1.75f;
-static const constexpr float layerHeight = 0.2f;
-static const constexpr float threadWidth = 0.5f;
+namespace {
+constexpr float filamentD = 1.75f;
+constexpr float layerHeight = 0.2f;
+constexpr float threadWidth = 0.5f;
 
-static const constexpr float pi = 3.1415926535897932384626433832795f;
+constexpr float pi = 3.1415926535897932384626433832795f;
 
 /// Path of Manhattan snake
 /// Alternate X and Y coordinates.
 /// It cannot print diagonals etc.
 /// First X and Y are a starting point.
-static const constexpr float snake1[] = {
+constexpr float snake1[] = {
     /// use 0.5 extrusion width
-    10,  /// start X
+    10, /// start X
     150, /// start Y
     170, /// X
     130, /// Y
-    10,  /// X
+    10, /// X
     110, /// ...
     170,
     90,
@@ -100,137 +101,151 @@ static const constexpr float snake1[] = {
     10,
 };
 
+#if PRINTER_IS_PRUSA_MINI()
+constexpr float y_step = 20;
+#else
+constexpr float y_step = 30;
+#endif
+constexpr float x_min = 10;
+constexpr float x_max = X_BED_SIZE - 10;
+constexpr float y_min = 30;
+constexpr float y1 = y_min + y_step;
+constexpr float y2 = y1 + y_step;
+constexpr float y3 = y2 + y_step;
+constexpr float y4 = y3 + y_step;
+constexpr float y5 = y4 + y_step;
+static_assert(Y_BED_SIZE > y5, "snake pattern out of bed");
+
 /// Path of Manhattan snake
 /// Alternate X and Y coordinates.
 /// It cannot print diagonals etc.
 /// First X and Y are a starting point.
-static const constexpr float snake2[] = {
+constexpr float snake2[] = {
     /// use 0.5 extrusion width
-    10,        /// start X
-    180 - 150, /// start Y
-    170,       /// X
-    180 - 130, /// Y
-    10,        /// X
-    180 - 110, /// ...
-    170,
-    180 - 90,
-    10,
-    180 - 70,
-    170,
-    180 - 50,
+    x_min, /// start X
+    y_min, /// start Y
+    x_max, /// X
+    y1, /// Y
+    x_min, /// X
+    y2, /// ...
+    x_max,
+    y3,
+    x_min,
+    y4,
+    x_max,
+    y5,
     ///
     /// frame around
     9.5,
-    180 - 17,
+    Y_BED_SIZE - 17,
     30.5,
-    180 - 30.5,
-    10,
-    180 - 30,
+    Y_BED_SIZE - 30.5,
+    x_min,
+    Y_BED_SIZE - 30,
     ///
     /// infill
     30,
-    180 - 29.5,
-    10,
-    180 - 29,
+    Y_BED_SIZE - 29.5,
+    x_min,
+    Y_BED_SIZE - 29,
     30,
-    180 - 28.5,
-    10,
-    180 - 28,
+    Y_BED_SIZE - 28.5,
+    x_min,
+    Y_BED_SIZE - 28,
     30,
-    180 - 27.5,
-    10,
-    180 - 27,
+    Y_BED_SIZE - 27.5,
+    x_min,
+    Y_BED_SIZE - 27,
     30,
-    180 - 26.5,
-    10,
-    180 - 26,
+    Y_BED_SIZE - 26.5,
+    x_min,
+    Y_BED_SIZE - 26,
     30,
-    180 - 25.5,
-    10,
-    180 - 25,
+    Y_BED_SIZE - 25.5,
+    x_min,
+    Y_BED_SIZE - 25,
     30,
-    180 - 24.5,
-    10,
-    180 - 24,
+    Y_BED_SIZE - 24.5,
+    x_min,
+    Y_BED_SIZE - 24,
     30,
-    180 - 23.5,
-    10,
-    180 - 23,
+    Y_BED_SIZE - 23.5,
+    x_min,
+    Y_BED_SIZE - 23,
     30,
-    180 - 22.5,
-    10,
-    180 - 22,
+    Y_BED_SIZE - 22.5,
+    x_min,
+    Y_BED_SIZE - 22,
     30,
-    180 - 21.5,
-    10,
-    180 - 21,
+    Y_BED_SIZE - 21.5,
+    x_min,
+    Y_BED_SIZE - 21,
     30,
-    180 - 20.5,
-    10,
-    180 - 20,
+    Y_BED_SIZE - 20.5,
+    x_min,
+    Y_BED_SIZE - 20,
     30,
-    180 - 19.5,
-    10,
-    180 - 19,
+    Y_BED_SIZE - 19.5,
+    x_min,
+    Y_BED_SIZE - 19,
     30,
-    180 - 18.5,
-    10,
-    180 - 18,
+    Y_BED_SIZE - 18.5,
+    x_min,
+    Y_BED_SIZE - 18,
     30,
-    180 - 17.5,
-    10,
+    Y_BED_SIZE - 17.5,
+    x_min,
 };
+} // anonymous namespace
 
-bool FirstLayer::isPrinting_ = false;
+// static variables
+FirstLayer *FirstLayer::instance_ = nullptr;
 
 void FirstLayer::finish_printing() {
     current_line = 1;
     total_lines = 1; /// don't set 0 to avoid division by zero
 }
 
-void FirstLayer::plan_destination(const float x, const float y, const float z, const float e, const float f) {
-    if (isfinite(x))
-        destination[0] = x;
-    else
-        destination[0] = current_position[0];
-
-    if (isfinite(y))
-        destination[1] = y;
-    else
-        destination[1] = current_position[1];
-
-    if (isfinite(z))
-        destination[2] = z;
-    else
-        destination[2] = current_position[2];
-
-    if (isfinite(e))
-        destination[3] = current_position[3] + e;
-    else
-        destination[3] = current_position[3];
-
-    if (isfinite(f))
-        feedrate_mm_s = f / 60.f;
-
-    prepare_move_to_destination();
+uint8_t FirstLayer::progress_percent() const {
+    return (total_lines > 0) ? std::min(uint8_t(100), uint8_t(100.f * current_line / (float)total_lines)) : 0;
 }
 
-void FirstLayer::inc_progress() {
-    current_line++;
-    const uint8_t progress = std::min(uint8_t(100), uint8_t(100.f * current_line / (float)total_lines));
-    if (last_progress != progress) {
-        last_progress = progress;
-        set_var_sd_percent_done(progress);
+void FirstLayer::plan_destination(const float x, const float y, const float z, const float e, const float f) {
+    if (isfinite(x)) {
+        destination[0] = x;
+    } else {
+        destination[0] = current_position[0];
     }
 
-    // const variant8_t var = variant8_i8(100 * current_line / (float)total_lines);
-    // marlin_set_var(MARLIN_VAR_SD_PDONE, var);
+    if (isfinite(y)) {
+        destination[1] = y;
+    } else {
+        destination[1] = current_position[1];
+    }
+
+    if (isfinite(z)) {
+        destination[2] = z;
+    } else {
+        destination[2] = current_position[2];
+    }
+
+    if (isfinite(e)) {
+        destination[3] = current_position[3] + e;
+    } else {
+        destination[3] = current_position[3];
+    }
+
+    if (isfinite(f)) {
+        feedrate_mm_s = f / 60.f;
+    }
+
+    prepare_move_to_destination();
 }
 
 void FirstLayer::go_to_destination(const float x, const float y, const float z, const float e, const float f) {
     plan_destination(x, y, z, e, f);
     wait_for_move();
-    inc_progress();
+    current_line++;
 }
 
 constexpr float FirstLayer::extrusion(const float x1, const float y1, const float x2, const float y2, const float layerHeight, const float threadWidth) const {
@@ -297,7 +312,7 @@ void FirstLayer::print_shape_1() {
 
 void FirstLayer::print_shape_2() {
     enable_all_steppers();
-    //M221 S100 ; reset flow
+    // M221 S100 ; reset flow
     planner.flow_percentage[0] = 100;
     planner.refresh_e_factor(0);
     /// fixed lines - constant to show 100% at the end + calibration pattern
@@ -316,32 +331,69 @@ void FirstLayer::print_shape_2() {
     print_snake(snake2, ARRAY_SIZE(snake2), 1000.f);
 
     /// finish printing
-    //go_to_destination(NAN, NAN, 2.f, -6.f, 2100.f);
-    //go_to_destination(178.f, 180.f, 10.f, NAN, 3000.f);
+    // go_to_destination(NAN, NAN, 2.f, -6.f, 2100.f);
+    // go_to_destination(178.f, 180.f, 10.f, NAN, 3000.f);
 
-    //TYPE:Custom
-    // Filament-specific end gcode
-    //TODO setprecent? ////M73 P94 R0
-    go_to_destination(NAN, NAN, NAN, -1.f, 2100.f);    // G1 E-1 F2100 ; retract
-    go_to_destination(NAN, NAN, 2.2f, NAN, 720.f);     // G1 Z2.2 F720 ; Move print head up
+    // TYPE:Custom
+    //  Filament-specific end gcode
+    // TODO setprecent? ////M73 P94 R0
+    go_to_destination(NAN, NAN, NAN, -1.f, 2100.f); // G1 E-1 F2100 ; retract
+    go_to_destination(NAN, NAN, 2.2f, NAN, 720.f); // G1 Z2.2 F720 ; Move print head up
     go_to_destination(178.f, 178.f, NAN, NAN, 4200.f); // G1 X178 Y178 F4200 ; park print head
-    //TODO setprecent? ////M73 P96 R0
+    // TODO setprecent? ////M73 P96 R0
     go_to_destination(NAN, NAN, 30.2f, NAN, 720.f); // G1 Z30.2 F720 ; Move print head further up
-    planner.synchronize();                          // G4 ; wait .. finish moves == M400
-    thermalManager.setTargetHotend(0, 0);           // M104 S0 ; turn off temperature
-    thermalManager.setTargetBed(0);                 // M140 S0 ; turn off heatbed
-    thermalManager.set_fan_speed(0, 0);             //M107 ; turn off fan
+    planner.synchronize(); // G4 ; wait .. finish moves == M400
 
-    //no need lro reset linear advance, was not set // M900 K0 ; reset LA
+    // no need lro reset linear advance, was not set // M900 K0 ; reset LA
     planner.finish_and_disable(); // M84 ; disable motors
-    //TODO setprecent? // M73 P100 R0
+    // TODO setprecent? // M73 P100 R0
     finish_printing();
 }
 
-void PrusaGcodeSuite::G26() {
-    if (all_axes_known()) { /// checks if axes are calibrated (homed) before
-        FirstLayer fl;
-        //fl.print_shape_1();
-        fl.print_shape_2();
+void FirstLayer::run() {
+    // is filament selected
+    auto filament = config_store().get_filament_type(active_extruder);
+    if (filament == FilamentType::none) {
+        return;
     }
+    auto filament_description = filament.parameters();
+    const int temp_nozzle = filament_description.nozzle_temperature;
+
+    // nozzle temperature print
+    thermalManager.setTargetHotend(temp_nozzle, 0);
+    marlin_server::set_temp_to_display(temp_nozzle, 0);
+    thermalManager.wait_for_hotend(0, false);
+
+    print_shape_2();
+
+    thermalManager.setTargetHotend(0, 0);
+    marlin_server::set_temp_to_display(0, 0);
+
+    thermalManager.setTargetBed(0);
 }
+
+/**
+ * @brief gcode to draw a first layer on bed
+ *
+ * does not take any parameters
+ * meant to be called from selftest
+ */
+
+/** \addtogroup G-Codes
+ * @{
+ */
+
+/**
+ *### G26: First layer calibration <a href="https://reprap.org/wiki/G-code#G26:_Mesh_Validation_Pattern">G26: Mesh Validation Pattern</a>
+ *
+ *#### Usage
+ *
+ *    G26
+ */
+
+void PrusaGcodeSuite::G26() {
+    FirstLayer fl;
+    fl.run();
+}
+
+/** @}*/
